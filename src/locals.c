@@ -380,7 +380,8 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     (*jni_env)->SetObjectField(jni_env, thisref, g_locals_value_field,
                                locals_values_arr);
     // Walk the stack looking for local variables in each frame.
-    for (jint k = 0; k < frame_count; ++k)
+    jint k = 0;
+    for (; k < frame_count; ++k)
     {
         // Skip native methods
         if (NATIVE_METHOD_JLOCATION == frame_buffer[k].location)
@@ -404,7 +405,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
             return;
         }
         flag = 'M' == class_source_file[0];
-        (*jvmti_env)->Deallocate(jvmti_env, class_source_file);
+        (*jvmti_env)->Deallocate(jvmti_env, (unsigned char *)class_source_file);
         if (flag)
         {
             if (! fetchLocals(jvmti_env, jni_env, thread,
