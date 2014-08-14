@@ -1,9 +1,13 @@
-/**
- * file: locals.c
- * auth: Victor Schappert
- * date: 20140608
- * desc: Code for pushing local variables data to Java using JVMTI
+/* Copyright 2014 (c) Suneido Software Corp. All rights reserved.
+ * Licensed under GPLv2.
  */
+
+//==============================================================================
+// file: locals.c
+// auth: Victor Schappert
+// date: 20140608
+// desc: Code for pushing local variables data to Java using JVMTI
+//==============================================================================
 
 #include <jvmti.h>
 
