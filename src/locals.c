@@ -17,6 +17,7 @@
 
 enum
 {
+    DEFAULT_LINE_NUMBER = -1,
     NATIVE_METHOD_JLOCATION = -1,
     SKIP_FRAMES = 1,
     MAX_STACK_FRAMES = 128,
@@ -43,6 +44,8 @@ static const char * LOCALS_VALUE_FIELD_NAME         = "localsValues";
 static const char * LOCALS_VALUE_FIELD_SIGNATURE    = "[[Ljava/lang/Object;";
 static const char * FRAME_OBJECTS_FIELD_NAME        = "frameObjects";
 static const char * FRAME_OBJECTS_FIELD_SIGNATURE   = "[Ljava/lang/Object;";
+static const char * LINE_NUMBERS_FIELD_NAME         = "lineNumbers";
+static const char * LINE_NUMBERS_FIELD_SIGNATURE    = "[I";
 static const char * IS_INITIALIZED_FIELD_NAME       = "isInitialized";
 static const char * IS_INITIALIZED_FIELD_SIGNATURE  = "Z";
 static const char * BREAKPT_METHOD_NAME             = "fetchInfo";
@@ -64,6 +67,7 @@ static jclass     g_stack_frame_class;
 static jfieldID   g_locals_name_field;
 static jfieldID   g_locals_value_field;
 static jfieldID   g_frame_objects_field;
+static jfieldID   g_line_numbers_field;
 static jfieldID   g_is_initialized_field;
 
 // =============================================================================
@@ -336,6 +340,8 @@ static int initGlobalRefs(JNIEnv * jni_env)
             LOCALS_VALUE_FIELD_NAME, LOCALS_VALUE_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_frame_objects_field,
             FRAME_OBJECTS_FIELD_NAME, FRAME_OBJECTS_FIELD_SIGNATURE) &&
+        getFieldID(jni_env, g_repo_class, &g_line_numbers_field,
+            LINE_NUMBERS_FIELD_NAME, LINE_NUMBERS_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_is_initialized_field,
             IS_INITIALIZED_FIELD_NAME, IS_INITIALIZED_FIELD_SIGNATURE);
 }
@@ -418,6 +424,19 @@ static int objArrPut(JNIEnv * jni_env, jobjectArray arr, jint index,
     return 1;
 }
 
+static int objFieldPut(JNIEnv * jni_env, jobject obj, jfieldID field_id,
+                       jobject field_value)
+{
+    (*jni_env)->SetObjectField(jni_env, obj, field_id, field_value);
+    if ((*jni_env)->ExceptionCheck(jni_env))
+    {
+        error1("exception in objFieldPut");
+        exceptionDescribe(jni_env);
+        return 0;
+    }
+    return 1;
+}
+
 static void deallocateLocalVariableTable(
     jvmtiEnv * jvmti_env, jvmtiLocalVariableEntry * table, jint count)
 
@@ -468,6 +487,70 @@ static void JNICALL callback_JVMDeath(jvmtiEnv * jvmti_env, JNIEnv * jni_env)
 //                         BREAKPOINT EVENT HANDLER
 // =============================================================================
 
+static int fetchLineNumbers(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
+                            jthread thread, jmethodID method,
+                            jlocation location, jint * line_numbers_arr,
+                            jint frame_index)
+{
+    int                    result = 0;
+    jvmtiError             error;
+    jvmtiLineNumberEntry * line_number_table = NULL;
+    jint                   line_number_entry_count = 0;
+    jint                   line_number = DEFAULT_LINE_NUMBER;
+    jint                   lo, mi, hi, len; // for binary search
+    // Get the line number table entry
+    error = (*jvmti_env)->GetLineNumberTable(jvmti_env, method,
+                                             &line_number_entry_count,
+                                             &line_number_table);
+    if (JVMTI_ERROR_ABSENT_INFORMATION == error)
+        goto fetchLineNumbers_store; // Store default value
+    else if (JVMTI_ERROR_NONE != error)
+    {
+        errorJVMTI(error, "failed to get line number table");
+        goto fetchLineNumbers_end;
+    }
+    else if (line_number_entry_count < 1)
+        goto fetchLineNumbers_store;
+    assert(line_number_table || !"Line number table should not be null");
+    // Find the greatest location in the table that is less than or equal to
+    // the given location.
+    lo = 0;
+    hi = line_number_entry_count; // hi is "one past the end"
+    while (1)
+    {
+        len = hi - lo;
+        if (len < 16)
+        {
+            assert(1 < len);
+            do
+            {
+                line_number = line_number_table[lo].line_number;
+                if (location <= line_number_table[lo].start_location)
+                    break;
+            }
+            while (++lo < hi);
+            goto fetchLineNumbers_store;
+        }
+        else // 16 < len
+        {
+            mi = lo + len / 2;
+            if (line_number_table[mi].start_location <= location)
+                lo = mi + 1;
+            else
+                hi = mi; // hi is "one past the end"
+        }
+    }
+fetchLineNumbers_store:
+    line_numbers_arr[frame_index] = line_number;
+    // Finished with success
+    result = 1;
+fetchLineNumbers_end:
+    if (line_number_table) // Contains no pointers so don't need sub-deallocates
+        (*jvmti_env)->Deallocate(jvmti_env, (unsigned char *)line_number_table);
+    // Return the success or failure code
+    return result;
+}
+
 static int fetchLocals(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread,
                       jmethodID method, jlocation location,
                       jobjectArray names_arr, jobjectArray values_arr,
@@ -475,7 +558,7 @@ static int fetchLocals(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread,
 {
     int                       result = 0;
     jvmtiError                error;
-    jvmtiLocalVariableEntry * local_entry_table = (jvmtiLocalVariableEntry *)NULL;
+    jvmtiLocalVariableEntry * local_entry_table = NULL;
     jint                      local_entry_count = 0;
     jobjectArray              frame_names_arr = (jobjectArray)NULL;
     jobjectArray              frame_values_arr = (jobjectArray)NULL;
@@ -487,15 +570,23 @@ static int fetchLocals(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread,
     error = (*jvmti_env)->GetLocalVariableTable(jvmti_env, method,
         &local_entry_count,
         &local_entry_table);
-    if (JVMTI_ERROR_NONE != error)
+    if (JVMTI_ERROR_ABSENT_INFORMATION == error)
+    {
+        result = 1;
+        goto fetchLocals_end;
+    }
+    else if (JVMTI_ERROR_NONE != error)
     {
         errorJVMTI(error, "getting local variable table");
-        return 0;
+        goto fetchLocals_end;
     }
     // NOTE: If the entry count is zero, GetLocalVariableTable() sometimes
     //       doesn't allocate memory for the table itself.
-    if (0 == local_entry_count)
-        return 1;
+    if (local_entry_count < 1)
+    {
+        result = 1;
+        goto fetchLocals_end;
+    }
     assert(local_entry_table || !"Local variable table should not be null");
     // Create arrays that can hold all the possible local variables for this
     // method and attach these arrays into the master arrays.
@@ -584,6 +675,8 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jobjectArray     locals_names_arr   = (jobjectArray)NULL;
     jobjectArray     locals_values_arr  = (jobjectArray)NULL;
     jobjectArray     frame_objects_arr  = (jobjectArray)NULL;
+    jintArray        line_numbers_arr   = (jintArray)NULL;
+    jint *           line_numbers_arr_  = NULL;
     jint             method_modifiers   = 0;
     jclass           class_ref          = (jclass)NULL;
     jobject          this_ref           = (jobject)NULL;
@@ -623,20 +716,35 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     }
     // Create the locals JNI data structures and assign them to the repository
     // object.
-    if (! objArrNew(jni_env, g_array_of_java_lang_string_class, frame_count, &locals_names_arr) ||
-        ! objArrNew(jni_env, g_array_of_java_lang_object_class, frame_count, &locals_values_arr) ||
-        ! objArrNew(jni_env, g_java_lang_object_class, frame_count, &frame_objects_arr))
+    if (!objArrNew(jni_env, g_array_of_java_lang_string_class, frame_count, &locals_names_arr) ||
+        !objArrNew(jni_env, g_array_of_java_lang_object_class, frame_count, &locals_values_arr) ||
+        !objArrNew(jni_env, g_java_lang_object_class, frame_count, &frame_objects_arr))
     {
         error1("failed to create locals data structures");
         goto callback_Breakpoint_cleanup;
     }
+    line_numbers_arr = (*jni_env)->NewIntArray(jni_env, frame_count);
+    if (!line_numbers_arr)
+    {
+        error1("failed to create line numbers array");
+        goto callback_Breakpoint_cleanup;
+    }
+    line_numbers_arr_ = (*jni_env)->GetIntArrayElements(jni_env,
+                                                        line_numbers_arr, NULL);
+    if (!line_numbers_arr)
+    {
+        error1("failed to get line numbers array elements");
+        goto callback_Breakpoint_cleanup;
+    }
     // Store the locals JNI data structures into "this".
-    (*jni_env)->SetObjectField(jni_env, repo_ref, g_locals_name_field,
-                               locals_names_arr);
-    (*jni_env)->SetObjectField(jni_env, repo_ref, g_locals_value_field,
-                               locals_values_arr);
-    (*jni_env)->SetObjectField(jni_env, repo_ref, g_frame_objects_field,
-                               frame_objects_arr);
+    if (!objFieldPut(jni_env, repo_ref, g_locals_name_field, locals_names_arr) ||
+        !objFieldPut(jni_env, repo_ref, g_locals_value_field, locals_values_arr) ||
+        !objFieldPut(jni_env, repo_ref, g_frame_objects_field, frame_objects_arr) ||
+        !objFieldPut(jni_env, repo_ref, g_line_numbers_field, line_numbers_arr))
+    {
+        error1("failed to store locals data structures into repo object");
+        goto callback_Breakpoint_cleanup;
+    }
     // Walk the stack looking for frames where the method's class is an instance
     // of g_stack_frame_class.
     jint k = 0;
@@ -702,7 +810,16 @@ fflush(stderr);
                           frame_buffer[k].method, frame_buffer[k].location,
                           locals_names_arr, locals_values_arr, k))
             goto callback_Breakpoint_cleanup; // Error already reported
+        if (! fetchLineNumbers(jvmti_env, jni_env, breakpoint_thread,
+                               frame_buffer[k].method, frame_buffer[k].location,
+                               line_numbers_arr_, k))
+            goto callback_Breakpoint_cleanup; // Error already reported
     }
+    // Write back the line numbers array
+    assert(line_numbers_arr_);
+    (*jni_env)->ReleaseIntArrayElements(jni_env, line_numbers_arr,
+                                        line_numbers_arr_, 0);
+    line_numbers_arr_ = NULL;
     // Mark the stack info repository as fully initialized
     (*jni_env)->SetBooleanField(jni_env, repo_ref, g_is_initialized_field,
                                 JNI_TRUE);
@@ -715,6 +832,10 @@ callback_Breakpoint_cleanup:
     // If frame buffer allocated on the heap, clean it up
     if (frame_buffer != frame_buffer_stack)
         free(frame_buffer);
+    // If the line numbers array is still consuming heap space, release it
+    if (line_numbers_arr_)
+        (*jni_env)->ReleaseIntArrayElements(jni_env, line_numbers_arr,
+                                            line_numbers_arr_, JNI_ABORT);
 }
 
 // =============================================================================
@@ -741,9 +862,9 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
         return error;
     // Indicate the capabilities we want
     memset(&caps, 0, sizeof(caps));
-    caps.can_access_local_variables     = 1; // Windows: Agent_OnLoad(...) only
-    caps.can_generate_breakpoint_events = 1; // Windows: Agent_OnLoad(...) only
-    caps.can_get_source_file_name       = 1; // Windows: Agent_OnAttach(...) too
+    caps.can_access_local_variables     = 1;
+    caps.can_get_line_numbers           = 1;
+    caps.can_generate_breakpoint_events = 1;
     error = (*jvmti)->AddCapabilities(jvmti, &caps);
     if (JVMTI_ERROR_NONE != error)
         return error;
