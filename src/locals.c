@@ -516,29 +516,28 @@ static int fetchLineNumbers(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     // the given location.
     lo = 0;
     hi = line_number_entry_count; // hi is "one past the end"
-    while (1)
+fetchLineNumbers_binary_search:
+    len = hi - lo;
+    if (len < 16)
     {
-        len = hi - lo;
-        if (len < 16)
+        assert(0 < len);
+        do
         {
-            assert(1 < len);
-            do
-            {
-                line_number = line_number_table[lo].line_number;
-                if (location <= line_number_table[lo].start_location)
-                    break;
-            }
-            while (++lo < hi);
-            goto fetchLineNumbers_store;
+            line_number = line_number_table[lo].line_number;
+            if (location <= line_number_table[lo].start_location)
+                break;
         }
-        else // 16 < len
-        {
-            mi = lo + len / 2;
-            if (line_number_table[mi].start_location <= location)
-                lo = mi + 1;
-            else
-                hi = mi; // hi is "one past the end"
-        }
+        while (++lo < hi);
+        goto fetchLineNumbers_store;
+    }
+    else // 16 < len
+    {
+        mi = lo + len / 2;
+        if (line_number_table[mi].start_location < location)
+            lo = mi + 1;
+        else
+            hi = mi; // hi is "one past the end"
+        goto fetchLineNumbers_binary_search;
     }
 fetchLineNumbers_store:
     line_numbers_arr[frame_index] = line_number;
@@ -799,22 +798,20 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         }
         else if (!objArrPut(jni_env, frame_objects_arr, k, class_ref))
         {
-fprintf(stderr, "putting class\n");
-fflush(stderr);
             error1("failed to store class reference for static method frame");
             goto callback_Breakpoint_cleanup;
         }
         (*jni_env)->DeleteLocalRef(jni_env, class_ref);
         // Fetch the locals for this frame
-        if (! fetchLocals(jvmti_env, jni_env, breakpoint_thread,
-                          frame_buffer[k].method, frame_buffer[k].location,
-                          locals_names_arr, locals_values_arr, k))
+        if (!fetchLocals(jvmti_env, jni_env, breakpoint_thread,
+                         frame_buffer[k].method, frame_buffer[k].location,
+                         locals_names_arr, locals_values_arr, k))
             goto callback_Breakpoint_cleanup; // Error already reported
-        if (! fetchLineNumbers(jvmti_env, jni_env, breakpoint_thread,
-                               frame_buffer[k].method, frame_buffer[k].location,
-                               line_numbers_arr_, k))
+        if (!fetchLineNumbers(jvmti_env, jni_env, breakpoint_thread,
+                              frame_buffer[k].method, frame_buffer[k].location,
+                              line_numbers_arr_, k))
             goto callback_Breakpoint_cleanup; // Error already reported
-    }
+    } // for k in [0 .. frame_count)
     // Write back the line numbers array
     assert(line_numbers_arr_);
     (*jni_env)->ReleaseIntArrayElements(jni_env, line_numbers_arr,
