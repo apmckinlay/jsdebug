@@ -87,6 +87,26 @@ static jfieldID   g_is_initialized_field;
 //                          ERROR LOGGING FUNCTIONS
 // =============================================================================
 
+struct uintToHexStrBuf
+{
+    char chars[20];
+};
+
+static char * uintToHexStr(unsigned int x, struct uintToHexStrBuf * buffer)
+{
+    char * i = buffer->chars + sizeof(buffer->chars) - 1;
+    *i-- = '\0';
+uintToStr_loop:
+    *i = "0123456789abcdef"[x % 16];
+    if (x)
+    {
+        x /= 16;
+        --i;
+        goto uintToStr_loop;
+    }
+    return i;
+}
+
 static void fatalErrorPrefix()
 {
     fputs("FATAL: jsdebug: ", stderr);
@@ -110,18 +130,20 @@ static void error2(const char * prefix, const char * suffix)
 static void errorJVMTI(jvmtiEnv * jvmti_env, jvmtiError error,
                        const char * message)
 {
-    char *     name = NULL;
+    char *                 name = NULL;
+    struct uintToHexStrBuf buffer;
     assert(JVMTI_ERROR_NONE != error);
     fputs(message, stderr);
     if (JVMTI_ERROR_NONE == (*jvmti_env)->GetErrorName(jvmti_env, error, &name))
     {
         fputs(" (", stderr);
         fputs(name, stderr);
-        fputc('<', stderr);
+        fputs("<0x", stderr);
     }
     else
-        fputs(" (jvmti error code ", stderr);
-    fprintf(stderr, "%d>)\n", (int)error);
+        fputs(" (jvmti error code <0x", stderr);
+    fputs(uintToHexStr((unsigned int)error, &buffer), stderr);
+    fputs(">)\n", stderr);
     fflush(stderr);
 }
 
@@ -813,7 +835,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         if (ACC_PUBLIC != (ACC_PUBLIC & method_modifiers))
             continue;
         // Skip static methods
-        if (ACC_STATIC != (ACC_STATIC & method_modifiers))
+        if (ACC_STATIC == (ACC_STATIC & method_modifiers))
             continue;
         // Get the declaring class of the method.
         error = (*jvmti_env)->GetMethodDeclaringClass(
