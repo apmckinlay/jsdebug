@@ -29,10 +29,11 @@ OBJECTS  :=$(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 CC:=gcc
 CC_INCLUDE_DIRS:="-I$(JAVA_HOME)/include" "-I$(JAVA_HOME)/include/linux"
 CC_INCLUDE_DIRS:=$(subst \,/,$(CC_INCLUDE_DIRS))
-CC_FLAGS=-O$(OPTLEVEL) $(DEBUGOPTION) $(CC_STDFLAGS) -Wall -fPIC -flto \
-         -fmessage-length=0 $(CC_INCLUDE_DIRS)
+CC_FLAGS=-O$(OPTLEVEL) $(DEBUGOPTION) -Wall -fPIC -fmessage-length=0 \
+         $(CC_INCLUDE_DIRS)
 
-LD_FLAGS:=-shared -flto
+LD:=gcc
+LD_FLAGS:=-shared
 
 #===============================================================================
 # CONFIGURATION-SPECIFIC FLAGS
@@ -50,8 +51,8 @@ DEBUGOPTION:=-g -fstack-check
 LD_FLAGS+= -g
 else ifeq ($(CONFIG),release)
 OPTLEVEL:=3
-DEBUGOPTION:=-DNDEBUG
-LD_FLAGS+= -s
+DEBUGOPTION:=-DNDEBUG -flto
+LD_FLAGS+= -s -flto
 else ifeq ($(shell echo $(CONFIG) | grep '^[0-3]g\?\(NDEBUG\)\?$$'),$(CONFIG))
 OPTLEVEL:=$(shell echo $(CONFIG) | grep -o '^[0-3]')
 FLAG_G:=$(shell echo $(CONFIG) | grep -o g)
@@ -87,7 +88,7 @@ $(BINDIR)/$(TARGET): $(OBJECTS)
 
 $(OBJECTS): $(OBJDIR)/%.o : $(SRCDIR)/%.c
 	@echo COMPILING $@
-	$(CC) $(CC_FLAGS) -c $< -o $@
+	@$(CC) $(CC_FLAGS) -c $< -o $@
 
 .PHONY: dirs
 dirs: $(OBJDIR) $(BINDIR)
