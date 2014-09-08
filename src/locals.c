@@ -36,18 +36,23 @@ enum
 static const char * JAVA_LANG_THROWABLE_CLASS       = "java/lang/Throwable";
 static const char * JAVA_LANG_STRING_CLASS          = "java/lang/String";
 static const char * JAVA_LANG_OBJECT_CLASS          = "java/lang/Object";
+static const char * JAVA_LANG_REFLECT_METHOD_CLASS  = "java/lang/reflect/Method";
+static const char * JAVA_LANG_ANNOTN_ANNOTN_CLASS   = "java/lang/annotation/Annotation";
 static const char * ARRAY_OF_JAVA_LANG_STRING_CLASS = "[Ljava/lang/String;";
 static const char * ARRAY_OF_JAVA_LANG_OBJECT_CLASS = "[Ljava/lang/Object;";
 static const char * THROWABLE_GET_MSG_METHOD_NAME   = "getMessage";
 static const char * THROWABLE_GET_MSG_METHOD_SIGNATURE =
     "()Ljava/lang/String;";
+static const char * METHOD_GET_ANNOTN_METHOD_NAME   = "getAnnotation";
+static const char * METHOD_GET_ANNOTN_METHOD_SIGNATURE =
+    "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;";
 
 static const char * LOCALS_NAME_FIELD_NAME          = "localsNames";
 static const char * LOCALS_NAME_FIELD_SIGNATURE     = "[[Ljava/lang/String;";
 static const char * LOCALS_VALUE_FIELD_NAME         = "localsValues";
 static const char * LOCALS_VALUE_FIELD_SIGNATURE    = "[[Ljava/lang/Object;";
-static const char * FRAME_OBJECTS_FIELD_NAME        = "frameObjects";
-static const char * FRAME_OBJECTS_FIELD_SIGNATURE   = "[Ljava/lang/Object;";
+static const char * ANNOTNS_FIELD_NAME              = "annotations";
+static const char * ANNOTNS_FIELD_SIGNATURE         = "[Ljava/lang/annotation/Annotation;";
 static const char * LINE_NUMBERS_FIELD_NAME         = "lineNumbers";
 static const char * LINE_NUMBERS_FIELD_SIGNATURE    = "[I";
 static const char * IS_INITIALIZED_FIELD_NAME       = "isInitialized";
@@ -62,15 +67,19 @@ static const char * BREAKPT_METHOD_SIGNATURE        = "()V";
 static jclass     g_java_lang_throwable_class;
 static jclass     g_java_lang_string_class;
 static jclass     g_java_lang_object_class;
+static jclass     g_java_lang_reflect_method_class;
+static jclass     g_java_lang_annotn_annotn_class;
 static jclass     g_array_of_java_lang_string_class;
 static jclass     g_array_of_java_lang_object_class;
 static jmethodID  g_throwable_get_message_method;
+static jmethodID  g_method_get_annotn_method;
 
-static jclass     g_repo_class;
-static jclass     g_stack_frame_class;
+static jclass     g_repo_class;                 // Repository for stack info
+static jclass     g_stack_frame_class;          // For filtering stack frames
+static jclass     g_stack_frame_annotn_class;   // For filtering stack frames
 static jfieldID   g_locals_name_field;
 static jfieldID   g_locals_value_field;
-static jfieldID   g_frame_objects_field;
+static jfieldID   g_annotns_field;
 static jfieldID   g_line_numbers_field;
 static jfieldID   g_is_initialized_field;
 
@@ -161,19 +170,22 @@ enum command_line_option
 {
     COMMAND_LINE_OPTION_REPO_CLASS,
     COMMAND_LINE_OPTION_STACK_FRAME_CLASS,
+    COMMAND_LINE_OPTION_STACK_FRAME_ANNOTN_CLASS,
     NUM_COMMAND_LINE_OPTIONS
 };
 
 static const char * const COMMAND_LINE_NAMES[NUM_COMMAND_LINE_OPTIONS] =
 {
     "repo_class",
-    "stack_frame_class"
+    "stack_frame_class",
+    "stack_frame_annotn_class"
 };
 
 static const char * const COMMAND_LINE_DEFAULTS[NUM_COMMAND_LINE_OPTIONS] =
 {
     "suneido/debug/StackInfo",
-    "suneido/runtime/SuCallable"
+    "suneido/runtime/SuCallable",
+    "suneido/debug/Locals"
 };
 
 static const char * command_line_options[NUM_COMMAND_LINE_OPTIONS];
@@ -330,24 +342,34 @@ static int initGlobalRefs(JNIEnv * jni_env)
             JAVA_LANG_STRING_CLASS) &&
         getClassGlobalRef(jni_env, &g_java_lang_object_class,
             JAVA_LANG_OBJECT_CLASS) &&
+        getClassGlobalRef(jni_env, &g_java_lang_reflect_method_class,
+            JAVA_LANG_REFLECT_METHOD_CLASS) &&
+        getMethodID(jni_env, g_java_lang_reflect_method_class,
+            &g_method_get_annotn_method,
+            METHOD_GET_ANNOTN_METHOD_NAME,
+            METHOD_GET_ANNOTN_METHOD_SIGNATURE) &&
+        getClassGlobalRef(jni_env, &g_java_lang_annotn_annotn_class,
+            JAVA_LANG_ANNOTN_ANNOTN_CLASS) &&
         getClassGlobalRef(jni_env, &g_array_of_java_lang_string_class,
             ARRAY_OF_JAVA_LANG_STRING_CLASS) &&
         getClassGlobalRef(jni_env, &g_array_of_java_lang_object_class,
             ARRAY_OF_JAVA_LANG_OBJECT_CLASS) &&
         getClassGlobalRef(jni_env, &g_repo_class,
             command_line_options[COMMAND_LINE_OPTION_REPO_CLASS]) &&
-        getClassGlobalRef(jni_env, &g_stack_frame_class,
-            command_line_options[COMMAND_LINE_OPTION_STACK_FRAME_CLASS]) &&
         getFieldID(jni_env, g_repo_class, &g_locals_name_field,
             LOCALS_NAME_FIELD_NAME, LOCALS_NAME_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_locals_value_field,
             LOCALS_VALUE_FIELD_NAME, LOCALS_VALUE_FIELD_SIGNATURE) &&
-        getFieldID(jni_env, g_repo_class, &g_frame_objects_field,
-            FRAME_OBJECTS_FIELD_NAME, FRAME_OBJECTS_FIELD_SIGNATURE) &&
+        getFieldID(jni_env, g_repo_class, &g_annotns_field,
+            ANNOTNS_FIELD_NAME, ANNOTNS_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_line_numbers_field,
             LINE_NUMBERS_FIELD_NAME, LINE_NUMBERS_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_is_initialized_field,
-            IS_INITIALIZED_FIELD_NAME, IS_INITIALIZED_FIELD_SIGNATURE);
+            IS_INITIALIZED_FIELD_NAME, IS_INITIALIZED_FIELD_SIGNATURE) &&
+        getClassGlobalRef(jni_env, &g_stack_frame_class,
+            command_line_options[COMMAND_LINE_OPTION_STACK_FRAME_CLASS]) &&
+        getClassGlobalRef(jni_env, &g_stack_frame_annotn_class,
+            command_line_options[COMMAND_LINE_OPTION_STACK_FRAME_ANNOTN_CLASS]);
 }
 
 static int initLocalsBreakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env)
@@ -677,12 +699,14 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jobject          repo_ref           = (jobject)NULL;
     jobjectArray     locals_names_arr   = (jobjectArray)NULL;
     jobjectArray     locals_values_arr  = (jobjectArray)NULL;
-    jobjectArray     frame_objects_arr  = (jobjectArray)NULL;
+    jobjectArray     annotns_arr        = (jobjectArray)NULL;
     jintArray        line_numbers_arr   = (jintArray)NULL;
     jint *           line_numbers_arr_  = NULL;
     jint             method_modifiers   = 0;
     jclass           class_ref          = (jclass)NULL;
-    jobject          this_ref           = (jobject)NULL;
+    jobject          method_ref         = (jobject)NULL;
+    jobject          annotn_ref         = (jobject)NULL;
+    jvalue           get_annotn_arg;
     // Fetch the current thread's frame count
     error = (*jvmti_env)->GetFrameCount(jvmti_env, breakpoint_thread,
                                         &frame_count);
@@ -721,7 +745,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     // object.
     if (!objArrNew(jni_env, g_array_of_java_lang_string_class, frame_count, &locals_names_arr) ||
         !objArrNew(jni_env, g_array_of_java_lang_object_class, frame_count, &locals_values_arr) ||
-        !objArrNew(jni_env, g_java_lang_object_class, frame_count, &frame_objects_arr))
+        !objArrNew(jni_env, g_java_lang_annotn_annotn_class, frame_count, &annotns_arr))
     {
         error1("failed to create locals data structures");
         goto callback_Breakpoint_cleanup;
@@ -742,7 +766,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     // Store the locals JNI data structures into "this".
     if (!objFieldPut(jni_env, repo_ref, g_locals_name_field, locals_names_arr) ||
         !objFieldPut(jni_env, repo_ref, g_locals_value_field, locals_values_arr) ||
-        !objFieldPut(jni_env, repo_ref, g_frame_objects_field, frame_objects_arr) ||
+        !objFieldPut(jni_env, repo_ref, g_annotns_field, annotns_arr) ||
         !objFieldPut(jni_env, repo_ref, g_line_numbers_field, line_numbers_arr))
     {
         error1("failed to store locals data structures into repo object");
@@ -750,6 +774,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     }
     // Walk the stack looking for frames where the method's class is an instance
     // of g_stack_frame_class.
+    get_annotn_arg.l = g_stack_frame_annotn_class;
     jint k = 0;
     for (; k < frame_count; ++k)
     {
@@ -767,6 +792,9 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         // Skip non-public methods
         if (ACC_PUBLIC != (ACC_PUBLIC & method_modifiers))
             continue;
+        // Skip static methods
+        if (ACC_STATIC != (ACC_STATIC & method_modifiers))
+            continue;
         // Get the declaring class of the method.
         error = (*jvmti_env)->GetMethodDeclaringClass(
             jvmti_env, frame_buffer[k].method, &class_ref);
@@ -778,34 +806,46 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         // If the declaring class is not assignable to g_stack_frame_class, we
         // don't want stack frame data from it.
         if (!(*jni_env)->IsAssignableFrom(jni_env, class_ref, g_stack_frame_class))
+        {
+            (*jni_env)->DeleteLocalRef(jni_env, class_ref);
             continue;
-        // If it's an instance method, fetch and store the "this" reference for
-        // the stack frame. Otherwise, if it's a static method, store the class
-        // reference.
-        if (ACC_STATIC != (ACC_STATIC & method_modifiers))
-        {
-            error = (*jvmti_env)->GetLocalInstance(jvmti_env, breakpoint_thread,
-                                                   SKIP_FRAMES + k, &this_ref);
-            if (JVMTI_ERROR_NONE != error)
-            {
-                errorJVMTI(error, "failed to get 'this' reference for non-"
-                                  "static method frame");
-                goto callback_Breakpoint_cleanup;
-            }
-            if (!objArrPut(jni_env, frame_objects_arr, k, this_ref))
-            {
-                error1("failed to store 'this' reference for non-static method "
-                       "frame");
-                goto callback_Breakpoint_cleanup;
-            }
-            (*jni_env)->DeleteLocalRef(jni_env, this_ref);
         }
-        else if (!objArrPut(jni_env, frame_objects_arr, k, class_ref))
+        // Convert the method to a Java reflected method.
+        method_ref = (*jni_env)->ToReflectedMethod(
+            jni_env, class_ref, frame_buffer[k].method, JNI_FALSE);
+        if ((*jni_env)->ExceptionCheck(jni_env))
         {
-            error1("failed to store class reference for static method frame");
+            error1("exception while converting method to reflected method");
+            exceptionDescribe(jni_env);
+            goto callback_Breakpoint_cleanup;
+        }
+        else if (!method_ref)
+        {
+            error1("failed to convert method to reflected method");
             goto callback_Breakpoint_cleanup;
         }
         (*jni_env)->DeleteLocalRef(jni_env, class_ref);
+        // Fetch the annotation attached to the reflected method.
+        annotn_ref = (*jni_env)->CallNonvirtualObjectMethodA(
+            jni_env, method_ref, g_java_lang_reflect_method_class,
+            g_method_get_annotn_method, &get_annotn_arg);
+        if ((*jni_env)->ExceptionCheck(jni_env))
+        {
+            error1("exception while fetching method annotation");
+            exceptionDescribe(jni_env);
+            goto callback_Breakpoint_cleanup;
+        }
+        (*jni_env)->DeleteLocalRef(jni_env, method_ref);
+        // Skip non-annotated methods.
+        if (!annotn_ref)
+            continue;
+        // Store the annotation
+        if (!objArrPut(jni_env, annotns_arr, k, annotn_ref))
+        {
+            error1("failed to store method annotation");
+            goto callback_Breakpoint_cleanup;
+        }
+        (*jni_env)->DeleteLocalRef(jni_env, annotn_ref);
         // Fetch the locals for this frame
         if (!fetchLocals(jvmti_env, jni_env, breakpoint_thread,
                          frame_buffer[k].method, frame_buffer[k].location,
