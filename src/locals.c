@@ -3,15 +3,21 @@
  */
 
 #ifdef _MSC_VER
-#pragma warning (disable : 4001) /*nonstandard extension 'single line comment'*/
+#pragma warning (disable : 4001) /* nonstandard extension: '//-style' comment */
 #endif // _MSC_VER
 
 //==============================================================================
 // file: locals.c
 // auth: Victor Schappert
 // date: 20140608
-// desc: Code for pushing local variables data to Java using JVMTI
+// desc: Code for pushing call stack data to Java using JVMTI
 //==============================================================================
+
+// -----------------------------------------------------------------------------
+// WARNING: This file must be kept in sync with the equivalent code in
+//          suneido/debug/JDWPAgentController.java, which is the fallback code
+//          in case the "jsdebug" agent library cannot be loaded into the JVM.
+// -----------------------------------------------------------------------------
 
 #include <jvmti.h>
 
