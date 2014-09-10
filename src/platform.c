@@ -14,8 +14,10 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#ifdef _MSC_VER
 #pragma warning (push)
 #pragma warning (disable : 4100) // unreferenced formal parameter
+#endif // _MSC_VER
 
 BOOL WINAPI DllMain(HINSTANCE hModule, DWORD fdwReason, LPVOID lpvReserved)
 {
@@ -37,6 +39,8 @@ BOOL WINAPI DllMain(HINSTANCE hModule, DWORD fdwReason, LPVOID lpvReserved)
     return TRUE;
 }
 
+#ifdef _MSC_VER
 #pragma warning (pop)
+#endif // _MSC_VER
 
-#endif
+#endif // _WIN32

@@ -2,6 +2,10 @@
  * Licensed under GPLv2.
  */
 
+#ifdef _MSC_VER
+#pragma warning (disable : 4001) /*nonstandard extension 'single line comment'*/
+#endif // _MSC_VER
+
 //==============================================================================
 // file: locals.c
 // auth: Victor Schappert
@@ -33,19 +37,31 @@ enum
     ACC_STATIC      = 0x0008,
 };
 
+enum method_name
+{
+    METHOD_NAME_UNKNOWN = 0x000,
+    METHOD_NAME_EVAL    = 0x100,
+    METHOD_NAME_EVAL0   = METHOD_NAME_EVAL | 10,
+    METHOD_NAME_EVAL1   = METHOD_NAME_EVAL | 11,
+    METHOD_NAME_EVAL2   = METHOD_NAME_EVAL | 12,
+    METHOD_NAME_EVAL3   = METHOD_NAME_EVAL | 13,
+    METHOD_NAME_EVAL4   = METHOD_NAME_EVAL | 14,
+    METHOD_NAME_CALL    = 0x200,
+    METHOD_NAME_CALL0   = METHOD_NAME_CALL | 10,
+    METHOD_NAME_CALL1   = METHOD_NAME_CALL | 11,
+    METHOD_NAME_CALL2   = METHOD_NAME_CALL | 12,
+    METHOD_NAME_CALL3   = METHOD_NAME_CALL | 13,
+    METHOD_NAME_CALL4   = METHOD_NAME_CALL | 14,
+};
+
 static const char * JAVA_LANG_THROWABLE_CLASS       = "java/lang/Throwable";
 static const char * JAVA_LANG_STRING_CLASS          = "java/lang/String";
 static const char * JAVA_LANG_OBJECT_CLASS          = "java/lang/Object";
-static const char * JAVA_LANG_REFLECT_METHOD_CLASS  = "java/lang/reflect/Method";
-static const char * JAVA_LANG_ANNOTN_ANNOTN_CLASS   = "java/lang/annotation/Annotation";
 static const char * ARRAY_OF_JAVA_LANG_STRING_CLASS = "[Ljava/lang/String;";
 static const char * ARRAY_OF_JAVA_LANG_OBJECT_CLASS = "[Ljava/lang/Object;";
 static const char * THROWABLE_GET_MSG_METHOD_NAME   = "getMessage";
 static const char * THROWABLE_GET_MSG_METHOD_SIGNATURE =
     "()Ljava/lang/String;";
-static const char * METHOD_GET_ANNOTN_METHOD_NAME   = "getAnnotation";
-static const char * METHOD_GET_ANNOTN_METHOD_SIGNATURE =
-    "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;";
 
 static const char * REPO_CLASS                      = "suneido/debug/StackInfo";
 static const char * STACK_FRAME_CLASS               = "suneido/runtime/SuCallable";
@@ -53,8 +69,8 @@ static const char * LOCALS_NAME_FIELD_NAME          = "localsNames";
 static const char * LOCALS_NAME_FIELD_SIGNATURE     = "[[Ljava/lang/String;";
 static const char * LOCALS_VALUE_FIELD_NAME         = "localsValues";
 static const char * LOCALS_VALUE_FIELD_SIGNATURE    = "[[Ljava/lang/Object;";
-static const char * ANNOTNS_FIELD_NAME              = "annotations";
-static const char * ANNOTNS_FIELD_SIGNATURE         = "[Ljava/lang/annotation/Annotation;";
+static const char * is_call_FIELD_NAME              = "isCall";
+static const char * is_call_FIELD_SIGNATURE         = "[Z";
 static const char * LINE_NUMBERS_FIELD_NAME         = "lineNumbers";
 static const char * LINE_NUMBERS_FIELD_SIGNATURE    = "[I";
 static const char * IS_INITIALIZED_FIELD_NAME       = "isInitialized";
@@ -69,19 +85,16 @@ static const char * BREAKPT_METHOD_SIGNATURE        = "()V";
 static jclass     g_java_lang_throwable_class;
 static jclass     g_java_lang_string_class;
 static jclass     g_java_lang_object_class;
-static jclass     g_java_lang_reflect_method_class;
-static jclass     g_java_lang_annotn_annotn_class;
 static jclass     g_array_of_java_lang_string_class;
 static jclass     g_array_of_java_lang_object_class;
 static jmethodID  g_throwable_get_message_method;
-static jmethodID  g_method_get_annotn_method;
 
 static jclass     g_repo_class;                 // Repository for stack info
 static jclass     g_stack_frame_class;          // For filtering stack frames
 static jclass     g_stack_frame_annotn_class;   // For filtering stack frames
 static jfieldID   g_locals_name_field;
 static jfieldID   g_locals_value_field;
-static jfieldID   g_annotns_field;
+static jfieldID   g_is_call_field;
 static jfieldID   g_line_numbers_field;
 static jfieldID   g_is_initialized_field;
 
@@ -89,12 +102,12 @@ static jfieldID   g_is_initialized_field;
 //                          ERROR LOGGING FUNCTIONS
 // =============================================================================
 
-struct uintToHexStrBuf
+struct tostr_buf
 {
     char chars[20];
 };
 
-static char * uintToHexStr(unsigned int x, struct uintToHexStrBuf * buffer)
+static char * uintToHexStr(unsigned int x, struct tostr_buf * buffer)
 {
     char * i = buffer->chars + sizeof(buffer->chars) - 1;
     *i-- = '\0';
@@ -132,8 +145,8 @@ static void error2(const char * prefix, const char * suffix)
 static void errorJVMTI(jvmtiEnv * jvmti_env, jvmtiError error,
                        const char * message)
 {
-    char *                 name = NULL;
-    struct uintToHexStrBuf buffer;
+    char *           name = NULL;
+    struct tostr_buf buffer;
     assert(JVMTI_ERROR_NONE != error);
     fputs(message, stderr);
     if (JVMTI_ERROR_NONE == (*jvmti_env)->GetErrorName(jvmti_env, error, &name))
@@ -174,7 +187,7 @@ static void exceptionDescribe(JNIEnv * jni_env)
     jstring      message          = (jstring)NULL;
     const char * message_chars    = (const char *)NULL;
     throwable = (*jni_env)->ExceptionOccurred(jni_env);
-    assert(throwable || !"do not call function if no JNI exception pending");
+    assert(throwable || !"Do not call function if no JNI exception pending");
     (*jni_env)->ExceptionClear(jni_env);
     if (! g_java_lang_throwable_class || ! g_throwable_get_message_method)
     {
@@ -282,14 +295,6 @@ static int initGlobalRefs(JNIEnv * jni_env)
             JAVA_LANG_STRING_CLASS) &&
         getClassGlobalRef(jni_env, &g_java_lang_object_class,
             JAVA_LANG_OBJECT_CLASS) &&
-        getClassGlobalRef(jni_env, &g_java_lang_reflect_method_class,
-            JAVA_LANG_REFLECT_METHOD_CLASS) &&
-        getMethodID(jni_env, g_java_lang_reflect_method_class,
-            &g_method_get_annotn_method,
-            METHOD_GET_ANNOTN_METHOD_NAME,
-            METHOD_GET_ANNOTN_METHOD_SIGNATURE) &&
-        getClassGlobalRef(jni_env, &g_java_lang_annotn_annotn_class,
-            JAVA_LANG_ANNOTN_ANNOTN_CLASS) &&
         getClassGlobalRef(jni_env, &g_array_of_java_lang_string_class,
             ARRAY_OF_JAVA_LANG_STRING_CLASS) &&
         getClassGlobalRef(jni_env, &g_array_of_java_lang_object_class,
@@ -299,8 +304,8 @@ static int initGlobalRefs(JNIEnv * jni_env)
             LOCALS_NAME_FIELD_NAME, LOCALS_NAME_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_locals_value_field,
             LOCALS_VALUE_FIELD_NAME, LOCALS_VALUE_FIELD_SIGNATURE) &&
-        getFieldID(jni_env, g_repo_class, &g_annotns_field,
-            ANNOTNS_FIELD_NAME, ANNOTNS_FIELD_SIGNATURE) &&
+        getFieldID(jni_env, g_repo_class, &g_is_call_field,
+            is_call_FIELD_NAME, is_call_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_line_numbers_field,
             LINE_NUMBERS_FIELD_NAME, LINE_NUMBERS_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_is_initialized_field,
@@ -424,7 +429,7 @@ static void deallocateLocalVariableTable(
 #ifdef _MSC_VER
 #pragma warning (push)
 #pragma warning (disable : 4100) // unreferenced formal parameter
-#endif
+#endif // _MSC_VER
 
 static void JNICALL callback_JVMInit(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                                      jthread thread)
@@ -455,7 +460,7 @@ callback_JVMInit_fatal:
 
 #ifdef _MSC_VER
 #pragma warning (pop)
-#endif
+#endif // _MSC_VER
 
 // =============================================================================
 //                         BREAKPOINT EVENT HANDLER
@@ -634,10 +639,50 @@ fetchLocals_end:
     return result;
 }
 
+static int getMethodName(jvmtiEnv * jvmti_env, jmethodID method,
+                         enum method_name * mn)
+{
+    char     * str;
+    jvmtiError error;
+    error = (*jvmti_env)->GetMethodName(jvmti_env, method, &str, NULL, NULL);
+    if (JVMTI_ERROR_NONE != error)
+    {
+        errorJVMTI(jvmti_env, error, "failed to get method name");
+        return 0;
+    }
+    assert(str || !"Method name can't be null");
+    if ('e' == str[0] && 'v' == str[1] && 'a' == str[2] && 'l' == str[3])
+    {
+        switch (str[4])
+        {
+            case '\0': *mn = METHOD_NAME_EVAL;  return 1;
+            case '0':  *mn = METHOD_NAME_EVAL0; return 1;
+            case '1':  *mn = METHOD_NAME_EVAL1; return 1;
+            case '2':  *mn = METHOD_NAME_EVAL2; return 1;
+            case '3':  *mn = METHOD_NAME_EVAL3; return 1;
+            case '4':  *mn = METHOD_NAME_EVAL4; return 1;
+        }
+    }
+    else if ('c' == str[0] && 'a' == str[1] && 'l' == str[2] && 'l' == str[3])
+    {
+        switch (str[4])
+        {
+            case '\0': *mn = METHOD_NAME_CALL;  return 1;
+            case '0':  *mn = METHOD_NAME_CALL0; return 1;
+            case '1':  *mn = METHOD_NAME_CALL1; return 1;
+            case '2':  *mn = METHOD_NAME_CALL2; return 1;
+            case '3':  *mn = METHOD_NAME_CALL3; return 1;
+            case '4':  *mn = METHOD_NAME_CALL4; return 1;
+        }
+    }
+    *mn = METHOD_NAME_UNKNOWN;
+    return 1;
+}
+
 #ifdef _MSC_VER
 #pragma warning (push)
 #pragma warning (disable : 4100) // unreferenced formal parameter
-#endif
+#endif // _MSC_VER
 
 static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                                         jthread breakpoint_thread,
@@ -649,16 +694,18 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jvmtiFrameInfo * frame_buffer       = NULL;
     jint             frame_count        = 0;
     jobject          repo_ref           = (jobject)NULL;
+    jobject          this_ref_cur       = (jobject)NULL;
+    jobject          this_ref_above     = (jobject)NULL;
     jobjectArray     locals_names_arr   = (jobjectArray)NULL;
     jobjectArray     locals_values_arr  = (jobjectArray)NULL;
-    jobjectArray     annotns_arr        = (jobjectArray)NULL;
+    jbooleanArray    is_call_arr        = (jbooleanArray)NULL;
+    jboolean *       is_call_arr_       = NULL;
     jintArray        line_numbers_arr   = (jintArray)NULL;
     jint *           line_numbers_arr_  = NULL;
     jint             method_modifiers   = 0;
     jclass           class_ref          = (jclass)NULL;
-    jobject          method_ref         = (jobject)NULL;
-    jobject          annotn_ref         = (jobject)NULL;
-    jvalue           get_annotn_arg;
+    enum method_name method_name_cur    = METHOD_NAME_UNKNOWN;
+    enum method_name method_name_above  = METHOD_NAME_UNKNOWN;
     // Fetch the current thread's frame count
     error = (*jvmti_env)->GetFrameCount(jvmti_env, breakpoint_thread,
                                         &frame_count);
@@ -694,13 +741,26 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                    "attempting to get GetLocalInstance() for repo_ref");
         goto callback_Breakpoint_cleanup;
     }
+    assert(repo_ref || !"Failed to get 'this' for repo_ref");
     // Create the locals JNI data structures and assign them to the repository
     // object.
     if (!objArrNew(jni_env, g_array_of_java_lang_string_class, frame_count, &locals_names_arr) ||
-        !objArrNew(jni_env, g_array_of_java_lang_object_class, frame_count, &locals_values_arr) ||
-        !objArrNew(jni_env, g_java_lang_annotn_annotn_class, frame_count, &annotns_arr))
+        !objArrNew(jni_env, g_array_of_java_lang_object_class, frame_count, &locals_values_arr))
     {
         error1("failed to create locals data structures");
+        goto callback_Breakpoint_cleanup;
+    }
+    is_call_arr = (*jni_env)->NewBooleanArray(jni_env, frame_count);
+    if (!is_call_arr)
+    {
+        error1("failed to create iscall? array");
+        goto callback_Breakpoint_cleanup;
+    }
+    is_call_arr_ = (*jni_env)->GetBooleanArrayElements(jni_env, is_call_arr,
+                                                       NULL);
+    if (!is_call_arr_)
+    {
+        error1("failed to get iscall? array elements");
         goto callback_Breakpoint_cleanup;
     }
     line_numbers_arr = (*jni_env)->NewIntArray(jni_env, frame_count);
@@ -711,7 +771,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     }
     line_numbers_arr_ = (*jni_env)->GetIntArrayElements(jni_env,
                                                         line_numbers_arr, NULL);
-    if (!line_numbers_arr)
+    if (!line_numbers_arr_)
     {
         error1("failed to get line numbers array elements");
         goto callback_Breakpoint_cleanup;
@@ -719,7 +779,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     // Store the locals JNI data structures into "this".
     if (!objFieldPut(jni_env, repo_ref, g_locals_name_field, locals_names_arr) ||
         !objFieldPut(jni_env, repo_ref, g_locals_value_field, locals_values_arr) ||
-        !objFieldPut(jni_env, repo_ref, g_annotns_field, annotns_arr) ||
+        !objFieldPut(jni_env, repo_ref, g_is_call_field, is_call_arr) ||
         !objFieldPut(jni_env, repo_ref, g_line_numbers_field, line_numbers_arr))
     {
         error1("failed to store locals data structures into repo object");
@@ -727,10 +787,20 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     }
     // Walk the stack looking for frames where the method's class is an instance
     // of g_stack_frame_class.
-    get_annotn_arg.l = g_stack_frame_annotn_class;
     jint k = 0;
     for (; k < frame_count; ++k)
     {
+        // Keep track of the method name and "this" value in the frame we just
+        // looked at (the frame "above" the current frame in the stack trace).
+        // This information is needed to determine which Java stack frames
+        // actually constitute Suneido stack frames since it may take 3-4 Java
+        // stack frames to invoke a Suneido callable.
+        method_name_above = method_name_cur;
+        method_name_cur = METHOD_NAME_UNKNOWN;
+        if (this_ref_above)
+            (*jni_env)->DeleteLocalRef(jni_env, this_ref_above);
+        this_ref_above = this_ref_cur;
+        this_ref_cur = NULL;
         // Skip native methods
         if (NATIVE_METHOD_JLOCATION == frame_buffer[k].location)
             continue;
@@ -764,42 +834,34 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
             (*jni_env)->DeleteLocalRef(jni_env, class_ref);
             continue;
         }
-        // Convert the method to a Java reflected method.
-        method_ref = (*jni_env)->ToReflectedMethod(
-            jni_env, class_ref, frame_buffer[k].method, JNI_FALSE);
-        if ((*jni_env)->ExceptionCheck(jni_env))
-        {
-            error1("exception while converting method to reflected method");
-            exceptionDescribe(jni_env);
+        // Get the method name and skip any methods whose names don't
+        // correspond to Suneido callable code.
+        if (!getMethodName(jvmti_env, frame_buffer[k].method, &method_name_cur))
             goto callback_Breakpoint_cleanup;
-        }
-        else if (!method_ref)
-        {
-            error1("failed to convert method to reflected method");
-            goto callback_Breakpoint_cleanup;
-        }
-        (*jni_env)->DeleteLocalRef(jni_env, class_ref);
-        // Fetch the annotation attached to the reflected method.
-        annotn_ref = (*jni_env)->CallNonvirtualObjectMethodA(
-            jni_env, method_ref, g_java_lang_reflect_method_class,
-            g_method_get_annotn_method, &get_annotn_arg);
-        if ((*jni_env)->ExceptionCheck(jni_env))
-        {
-            error1("exception while fetching method annotation");
-            exceptionDescribe(jni_env);
-            goto callback_Breakpoint_cleanup;
-        }
-        (*jni_env)->DeleteLocalRef(jni_env, method_ref);
-        // Skip non-annotated methods.
-        if (!annotn_ref)
+        if (METHOD_NAME_UNKNOWN == method_name_cur)
             continue;
-        // Store the annotation
-        if (!objArrPut(jni_env, annotns_arr, k, annotn_ref))
+        // Get the "this" instance so we can determine if this stack frame is
+        // the same as the previous stack frame.
+        error = (*jvmti_env)->GetLocalInstance(jvmti_env, breakpoint_thread, 0,
+                                               &this_ref_cur);
+        if (JVMTI_ERROR_NONE != error)
         {
-            error1("failed to store method annotation");
+            errorJVMTI(jvmti_env, error,
+                       "attempting to get GetLocalInstance() for this_ref_cur");
             goto callback_Breakpoint_cleanup;
         }
-        (*jni_env)->DeleteLocalRef(jni_env, annotn_ref);
+        assert(this_ref_cur || !"Failed to get 'this' for current stack frame");
+        // If the "this" instance for this Java stack frame is the same as the
+        // "this" instance of the immediately preceding Java stack frame, both
+        // frames may logically be part of the same Suneido callable invocation
+        // and we only want the top frame, which we have already seen...
+        if (this_ref_above &&
+            (*jni_env)->IsSameObject(jni_env, this_ref_cur, this_ref_above) &&
+            method_name_above != method_name_cur)
+            continue;
+        // Tag methods that are calls.
+        if (METHOD_NAME_CALL & method_name_cur)
+            is_call_arr_[k] = JNI_TRUE;
         // Fetch the locals for this frame
         if (!fetchLocals(jvmti_env, jni_env, breakpoint_thread,
                          frame_buffer[k].method, frame_buffer[k].location,
@@ -809,6 +871,11 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                               frame_buffer[k].location, line_numbers_arr_, k))
             goto callback_Breakpoint_cleanup; // Error already reported
     } // for k in [0 .. frame_count)
+    // Write back the iscall? array
+    assert(is_call_arr_);
+    (*jni_env)->ReleaseBooleanArrayElements(jni_env, is_call_arr, is_call_arr_,
+                                            0);
+    is_call_arr_ = NULL;
     // Write back the line numbers array
     assert(line_numbers_arr_);
     (*jni_env)->ReleaseIntArrayElements(jni_env, line_numbers_arr,
@@ -826,6 +893,10 @@ callback_Breakpoint_cleanup:
     // If frame buffer allocated on the heap, clean it up
     if (frame_buffer != frame_buffer_stack)
         free(frame_buffer);
+    // If the iscall? array is still consuming heap space, release it
+    if (is_call_arr_)
+        (*jni_env)->ReleaseBooleanArrayElements(jni_env, is_call_arr,
+                                                is_call_arr_, JNI_ABORT);
     // If the line numbers array is still consuming heap space, release it
     if (line_numbers_arr_)
         (*jni_env)->ReleaseIntArrayElements(jni_env, line_numbers_arr,
@@ -834,7 +905,7 @@ callback_Breakpoint_cleanup:
 
 #ifdef _MSC_VER
 #pragma warning (pop)
-#endif
+#endif // _MSC_VER
 
 // =============================================================================
 //                                AGENT init
@@ -843,7 +914,7 @@ callback_Breakpoint_cleanup:
 #ifdef _MSC_VER
 #pragma warning (push)
 #pragma warning (disable : 4100) // unreferenced formal parameter
-#endif
+#endif // _MSC_VER
 
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
                                     void * reserved)
@@ -906,4 +977,4 @@ JNIEXPORT void JNICALL Agent_OnUnload(JavaVM * jvm)
 
 #ifdef _MSC_VER
 #pragma warning (pop)
-#endif
+#endif // _MSC_VER
