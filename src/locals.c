@@ -421,6 +421,11 @@ static void deallocateLocalVariableTable(
 //                            JVM INIT CALLBACKS
 // =============================================================================
 
+#ifdef _MSC_VER
+#pragma warning (push)
+#pragma warning (disable : 4100) // unreferenced formal parameter
+#endif
+
 static void JNICALL callback_JVMInit(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                                      jthread thread)
 {
@@ -448,12 +453,15 @@ callback_JVMInit_fatal:
     (*jni_env)->FatalError(jni_env, "initialization failed");
 }
 
+#ifdef _MSC_VER
+#pragma warning (pop)
+#endif
+
 // =============================================================================
 //                         BREAKPOINT EVENT HANDLER
 // =============================================================================
 
-static int fetchLineNumbers(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
-                            jthread thread, jmethodID method,
+static int fetchLineNumbers(jvmtiEnv * jvmti_env, jmethodID method,
                             jlocation location, jint * line_numbers_arr,
                             jint frame_index)
 {
@@ -626,6 +634,11 @@ fetchLocals_end:
     return result;
 }
 
+#ifdef _MSC_VER
+#pragma warning (push)
+#pragma warning (disable : 4100) // unreferenced formal parameter
+#endif
+
 static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                                         jthread breakpoint_thread,
                                         jmethodID breakpoint_method,
@@ -792,9 +805,8 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                          frame_buffer[k].method, frame_buffer[k].location,
                          locals_names_arr, locals_values_arr, k))
             goto callback_Breakpoint_cleanup; // Error already reported
-        if (!fetchLineNumbers(jvmti_env, jni_env, breakpoint_thread,
-                              frame_buffer[k].method, frame_buffer[k].location,
-                              line_numbers_arr_, k))
+        if (!fetchLineNumbers(jvmti_env, frame_buffer[k].method,
+                              frame_buffer[k].location, line_numbers_arr_, k))
             goto callback_Breakpoint_cleanup; // Error already reported
     } // for k in [0 .. frame_count)
     // Write back the line numbers array
@@ -820,9 +832,18 @@ callback_Breakpoint_cleanup:
                                             line_numbers_arr_, JNI_ABORT);
 }
 
+#ifdef _MSC_VER
+#pragma warning (pop)
+#endif
+
 // =============================================================================
 //                                AGENT init
 // =============================================================================
+
+#ifdef _MSC_VER
+#pragma warning (push)
+#pragma warning (disable : 4100) // unreferenced formal parameter
+#endif
 
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
                                     void * reserved)
@@ -882,3 +903,7 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
 
 JNIEXPORT void JNICALL Agent_OnUnload(JavaVM * jvm)
 { }
+
+#ifdef _MSC_VER
+#pragma warning (pop)
+#endif

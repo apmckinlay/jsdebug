@@ -14,6 +14,9 @@
 #define WIN32_LEAN_AND_MEAN
 #include <Windows.h>
 
+#pragma warning (push)
+#pragma warning (disable : 4100) // unreferenced formal parameter
+
 BOOL WINAPI DllMain(HINSTANCE hModule, DWORD fdwReason, LPVOID lpvReserved)
 {
     switch (fdwReason)
@@ -33,5 +36,7 @@ BOOL WINAPI DllMain(HINSTANCE hModule, DWORD fdwReason, LPVOID lpvReserved)
     }
     return TRUE;
 }
+
+#pragma warning (pop)
 
 #endif
