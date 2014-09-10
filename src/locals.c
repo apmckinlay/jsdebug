@@ -91,7 +91,6 @@ static jmethodID  g_throwable_get_message_method;
 
 static jclass     g_repo_class;                 // Repository for stack info
 static jclass     g_stack_frame_class;          // For filtering stack frames
-static jclass     g_stack_frame_annotn_class;   // For filtering stack frames
 static jfieldID   g_locals_name_field;
 static jfieldID   g_locals_value_field;
 static jfieldID   g_is_call_field;
