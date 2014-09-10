@@ -47,6 +47,8 @@ static const char * METHOD_GET_ANNOTN_METHOD_NAME   = "getAnnotation";
 static const char * METHOD_GET_ANNOTN_METHOD_SIGNATURE =
     "(Ljava/lang/Class;)Ljava/lang/annotation/Annotation;";
 
+static const char * REPO_CLASS                      = "suneido/debug/StackInfo";
+static const char * STACK_FRAME_CLASS               = "suneido/runtime/SuCallable";
 static const char * LOCALS_NAME_FIELD_NAME          = "localsNames";
 static const char * LOCALS_NAME_FIELD_SIGNATURE     = "[[Ljava/lang/String;";
 static const char * LOCALS_VALUE_FIELD_NAME         = "localsValues";
@@ -201,106 +203,6 @@ static void exceptionDescribe(JNIEnv * jni_env)
 }
 
 // =============================================================================
-//                           COMMAND LINE OPTIONS
-// =============================================================================
-
-enum command_line_option
-{
-    COMMAND_LINE_OPTION_REPO_CLASS,
-    COMMAND_LINE_OPTION_STACK_FRAME_CLASS,
-    COMMAND_LINE_OPTION_STACK_FRAME_ANNOTN_CLASS,
-    NUM_COMMAND_LINE_OPTIONS
-};
-
-static const char * const COMMAND_LINE_NAMES[NUM_COMMAND_LINE_OPTIONS] =
-{
-    "repo_class",
-    "stack_frame_class",
-    "stack_frame_annotn_class"
-};
-
-static const char * const COMMAND_LINE_DEFAULTS[NUM_COMMAND_LINE_OPTIONS] =
-{
-    "suneido/debug/StackInfo",
-    "suneido/runtime/SuCallable",
-    "suneido/debug/Locals"
-};
-
-static const char * command_line_options[NUM_COMMAND_LINE_OPTIONS];
-
-static char * optionDup(const char * start, const char * end)
-{
-    size_t len = end - start;
-    char * dup = (char *)malloc(len + 1);
-    memcpy(dup, start, len);
-    dup[len] = '\0';
-    return dup;
-}
-
-static jvmtiError optionsParse(const char * options)
-{
-    const char * equal_sign;
-    const char * comma;
-    const char * option_end;
-    int option_i;
-    // Parse options
-    if (options)
-    {
-        while (*options)
-        {
-            equal_sign = strchr(options, '=');
-            if (!equal_sign)
-            {
-                error2("bad option: ", options);
-                return JVMTI_ERROR_ILLEGAL_ARGUMENT;
-            }
-            comma = strchr(equal_sign + 1, ',');
-            option_end = comma ? comma : strchr(equal_sign + 1, '\0');
-            for (option_i = 0; option_i < NUM_COMMAND_LINE_OPTIONS; ++option_i)
-            {
-                if (!memcmp(options, COMMAND_LINE_NAMES[option_i],
-                            equal_sign - options))
-                    goto optionsParse_matched_name;
-            }
-            error2("unrecognized option name: ", options);
-            return JVMTI_ERROR_NOT_FOUND;
-    optionsParse_matched_name:
-            if (command_line_options[option_i])
-            {
-                error2("duplicate option name: ", options);
-                return JVMTI_ERROR_DUPLICATE;
-            }
-            else
-                command_line_options[option_i] = optionDup(equal_sign + 1,
-                                                           option_end);
-            if (comma)
-                options = comma + 1;
-            else
-                break;
-        } // while (*options)
-    } // if (options)
-    // Insert default options
-    for (option_i = 0; option_i < NUM_COMMAND_LINE_OPTIONS; ++option_i)
-    {
-        if (!command_line_options[option_i])
-            command_line_options[option_i] = COMMAND_LINE_DEFAULTS[option_i];
-    }
-    // Return success
-    return JVMTI_ERROR_NONE;
-}
-
-static void optionsCleanup()
-{
-    int option_i;
-    for (option_i = 0; option_i < NUM_COMMAND_LINE_OPTIONS; ++option_i)
-    {
-        if (command_line_options[option_i] &&
-            command_line_options[option_i] != COMMAND_LINE_DEFAULTS[option_i])
-            free((char *)command_line_options[option_i]);
-    }
-}
-
-// =============================================================================
 //                             HELPER FUNCTIONS
 // =============================================================================
 
@@ -392,8 +294,7 @@ static int initGlobalRefs(JNIEnv * jni_env)
             ARRAY_OF_JAVA_LANG_STRING_CLASS) &&
         getClassGlobalRef(jni_env, &g_array_of_java_lang_object_class,
             ARRAY_OF_JAVA_LANG_OBJECT_CLASS) &&
-        getClassGlobalRef(jni_env, &g_repo_class,
-            command_line_options[COMMAND_LINE_OPTION_REPO_CLASS]) &&
+        getClassGlobalRef(jni_env, &g_repo_class, REPO_CLASS) &&
         getFieldID(jni_env, g_repo_class, &g_locals_name_field,
             LOCALS_NAME_FIELD_NAME, LOCALS_NAME_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_locals_value_field,
@@ -404,10 +305,7 @@ static int initGlobalRefs(JNIEnv * jni_env)
             LINE_NUMBERS_FIELD_NAME, LINE_NUMBERS_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_is_initialized_field,
             IS_INITIALIZED_FIELD_NAME, IS_INITIALIZED_FIELD_SIGNATURE) &&
-        getClassGlobalRef(jni_env, &g_stack_frame_class,
-            command_line_options[COMMAND_LINE_OPTION_STACK_FRAME_CLASS]) &&
-        getClassGlobalRef(jni_env, &g_stack_frame_annotn_class,
-            command_line_options[COMMAND_LINE_OPTION_STACK_FRAME_ANNOTN_CLASS]);
+        getClassGlobalRef(jni_env, &g_stack_frame_class, STACK_FRAME_CLASS);
 }
 
 static int initLocalsBreakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env)
@@ -933,13 +831,6 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
     jvmtiError          error;
     jvmtiCapabilities   caps;
     jvmtiEventCallbacks callbacks;
-    // Parse the user-provided options
-    error = optionsParse(options);
-    if (JVMTI_ERROR_NONE != error)
-    {
-        optionsCleanup();
-        return error;
-    }
     // Obtain a pointer to the JVMTI environment
     error = (*jvm)->GetEnv(jvm, (void **)&jvmti, JVMTI_VERSION_1_0);
     if (JVMTI_ERROR_NONE != error)
@@ -989,7 +880,5 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
     return JNI_OK;
 }
 
-JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm)
-{
-    optionsCleanup();
-}
+JNIEXPORT void JNICALL Agent_OnUnload(JavaVM * jvm)
+{ }
