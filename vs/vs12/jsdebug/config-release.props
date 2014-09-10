@@ -19,6 +19,8 @@
       <ExceptionHandling>false</ExceptionHandling>
       <FunctionLevelLinking>true</FunctionLevelLinking>
       <PreprocessorDefinitions>NDEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <BufferSecurityCheck>false</BufferSecurityCheck>
+      <WarningLevel>Level4</WarningLevel>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup />
