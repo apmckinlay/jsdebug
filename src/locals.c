@@ -735,8 +735,8 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     error = (*jvmti_env)->GetStackTrace(jvmti_env, breakpoint_thread,
                                         SKIP_FRAMES, frame_count - SKIP_FRAMES,
                                         frame_buffer, &frame_count);
-    // Retrieve the "this" reference for the frame where the exception was
-    // raised. This is the "this" reference to the repository object of type
+    // Retrieve the "this" reference for the frame where the breakpoint was
+    // found. This is the "this" reference to the repository object of type
     // REPO_CLASS in whose fields we will store the local variable values.
     error = (*jvmti_env)->GetLocalInstance(jvmti_env, breakpoint_thread, 0,
                                            &repo_ref);
