@@ -33,7 +33,7 @@ enum
 {
     DEFAULT_LINE_NUMBER = -1,
     NATIVE_METHOD_JLOCATION = -1,
-    SKIP_FRAMES = 1,
+    SKIP_FRAMES = 2 /* (0) StackInfo.fetchInfo() ; (1) StackInfo.<init> */,
     MAX_STACK_FRAMES = 128,
 };
 
@@ -75,8 +75,8 @@ static const char * LOCALS_NAME_FIELD_NAME          = "localsNames";
 static const char * LOCALS_NAME_FIELD_SIGNATURE     = "[[Ljava/lang/String;";
 static const char * LOCALS_VALUE_FIELD_NAME         = "localsValues";
 static const char * LOCALS_VALUE_FIELD_SIGNATURE    = "[[Ljava/lang/Object;";
-static const char * is_call_FIELD_NAME              = "isCall";
-static const char * is_call_FIELD_SIGNATURE         = "[Z";
+static const char * IS_CALL_FIELD_NAME              = "isCall";
+static const char * IS_CALL_FIELD_SIGNATURE         = "[Z";
 static const char * LINE_NUMBERS_FIELD_NAME         = "lineNumbers";
 static const char * LINE_NUMBERS_FIELD_SIGNATURE    = "[I";
 static const char * IS_INITIALIZED_FIELD_NAME       = "isInitialized";
@@ -310,7 +310,7 @@ static int initGlobalRefs(JNIEnv * jni_env)
         getFieldID(jni_env, g_repo_class, &g_locals_value_field,
             LOCALS_VALUE_FIELD_NAME, LOCALS_VALUE_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_is_call_field,
-            is_call_FIELD_NAME, is_call_FIELD_SIGNATURE) &&
+            IS_CALL_FIELD_NAME, IS_CALL_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_line_numbers_field,
             LINE_NUMBERS_FIELD_NAME, LINE_NUMBERS_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_is_initialized_field,
