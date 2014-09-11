@@ -660,27 +660,29 @@ static int getMethodName(jvmtiEnv * jvmti_env, jmethodID method,
     {
         switch (str[4])
         {
-            case '\0': *mn = METHOD_NAME_EVAL;  return 1;
-            case '0':  *mn = METHOD_NAME_EVAL0; return 1;
-            case '1':  *mn = METHOD_NAME_EVAL1; return 1;
-            case '2':  *mn = METHOD_NAME_EVAL2; return 1;
-            case '3':  *mn = METHOD_NAME_EVAL3; return 1;
-            case '4':  *mn = METHOD_NAME_EVAL4; return 1;
+            case '\0': *mn = METHOD_NAME_EVAL;  goto getMethodName_success;
+            case '0':  *mn = METHOD_NAME_EVAL0; goto getMethodName_success;
+            case '1':  *mn = METHOD_NAME_EVAL1; goto getMethodName_success;
+            case '2':  *mn = METHOD_NAME_EVAL2; goto getMethodName_success;
+            case '3':  *mn = METHOD_NAME_EVAL3; goto getMethodName_success;
+            case '4':  *mn = METHOD_NAME_EVAL4; goto getMethodName_success;
         }
     }
     else if ('c' == str[0] && 'a' == str[1] && 'l' == str[2] && 'l' == str[3])
     {
         switch (str[4])
         {
-            case '\0': *mn = METHOD_NAME_CALL;  return 1;
-            case '0':  *mn = METHOD_NAME_CALL0; return 1;
-            case '1':  *mn = METHOD_NAME_CALL1; return 1;
-            case '2':  *mn = METHOD_NAME_CALL2; return 1;
-            case '3':  *mn = METHOD_NAME_CALL3; return 1;
-            case '4':  *mn = METHOD_NAME_CALL4; return 1;
+            case '\0': *mn = METHOD_NAME_CALL;  goto getMethodName_success;
+            case '0':  *mn = METHOD_NAME_CALL0; goto getMethodName_success;
+            case '1':  *mn = METHOD_NAME_CALL1; goto getMethodName_success;
+            case '2':  *mn = METHOD_NAME_CALL2; goto getMethodName_success;
+            case '3':  *mn = METHOD_NAME_CALL3; goto getMethodName_success;
+            case '4':  *mn = METHOD_NAME_CALL4; goto getMethodName_success;
         }
     }
     *mn = METHOD_NAME_UNKNOWN;
+getMethodName_success:
+    (*jvmti_env)->Deallocate(jvmti_env, (unsigned char *)str);
     return 1;
 }
 
