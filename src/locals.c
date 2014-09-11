@@ -82,7 +82,7 @@ static const char * LINE_NUMBERS_FIELD_SIGNATURE    = "[I";
 static const char * IS_INITIALIZED_FIELD_NAME       = "isInitialized";
 static const char * IS_INITIALIZED_FIELD_SIGNATURE  = "Z";
 static const char * BREAKPT_METHOD_NAME             = "fetchInfo";
-static const char * BREAKPT_METHOD_SIGNATURE        = "()V";
+static const char * BREAKPT_METHOD_SIGNATURE        = "()Lsuneido/debug/StackInfo";
 
 // =============================================================================
 //                                  GLOBALS
