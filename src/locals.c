@@ -33,7 +33,7 @@ enum
 {
     DEFAULT_LINE_NUMBER = -1,
     NATIVE_METHOD_JLOCATION = -1,
-    SKIP_FRAMES = 2 /* (0) StackInfo.fetchInfo() ; (1) StackInfo.<init> */,
+    SKIP_FRAMES = 1 /* i.e. we know frame #1 is StackInfo.fetchInfo() */,
     MAX_STACK_FRAMES = 128,
 };
 
