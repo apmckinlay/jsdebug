@@ -825,6 +825,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         // Skip static methods
         if (ACC_STATIC == (ACC_STATIC & method_modifiers))
             continue;
+// TODO: Use IsInstanceOf so don't need to get declaring class...
         // Get the declaring class of the method.
         error = (*jvmti_env)->GetMethodDeclaringClass(
             jvmti_env, frame_buffer[k].method, &class_ref);
@@ -850,7 +851,8 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
             continue;
         // Get the "this" instance so we can determine if this stack frame is
         // the same as the previous stack frame.
-        error = (*jvmti_env)->GetLocalInstance(jvmti_env, breakpoint_thread, 0,
+        error = (*jvmti_env)->GetLocalInstance(jvmti_env, breakpoint_thread,
+                                               k + SKIP_FRAMES,
                                                &this_ref_cur);
         if (JVMTI_ERROR_NONE != error)
         {
