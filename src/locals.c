@@ -709,8 +709,6 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jintArray        line_numbers_arr   = (jintArray)NULL;
     jint *           line_numbers_arr_  = NULL;
     jint             method_modifiers   = 0;
-    jclass           class_ref          = (jclass)NULL;
-    jboolean         is_stack_frame     = JNI_FALSE;
     enum method_name method_name_cur    = METHOD_NAME_UNKNOWN;
     enum method_name method_name_above  = METHOD_NAME_UNKNOWN;
     // Fetch the current thread's frame count
@@ -825,32 +823,9 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         // Skip static methods
         if (ACC_STATIC == (ACC_STATIC & method_modifiers))
             continue;
-// TODO: Use IsInstanceOf so don't need to get declaring class...
-        // Get the declaring class of the method.
-        error = (*jvmti_env)->GetMethodDeclaringClass(
-            jvmti_env, frame_buffer[k].method, &class_ref);
-        if (JVMTI_ERROR_NONE != error)
-        {
-            errorJVMTI(jvmti_env, error,
-                       "failed to get method declaring class");
-            goto callback_Breakpoint_cleanup;
-        }
-        // If the declaring class is not assignable to g_stack_frame_class, we
-        // don't want stack frame data from it.
-        is_stack_frame = (*jni_env)->IsAssignableFrom(jni_env, class_ref,
-                                                      g_stack_frame_class);
-                                                      
-        (*jni_env)->DeleteLocalRef(jni_env, class_ref);
-        if (!is_stack_frame)
-            continue;
-        // Get the method name and skip any methods whose names don't
-        // correspond to Suneido callable code.
-        if (!getMethodName(jvmti_env, frame_buffer[k].method, &method_name_cur))
-            goto callback_Breakpoint_cleanup;
-        if (METHOD_NAME_UNKNOWN == method_name_cur)
-            continue;
-        // Get the "this" instance so we can determine if this stack frame is
-        // the same as the previous stack frame.
+        // If the "this" of the stack frame under consideration isn't an
+        // instance of g_stack_frame_class, we don't want stack frame data from
+        // it.
         error = (*jvmti_env)->GetLocalInstance(jvmti_env, breakpoint_thread,
                                                k + SKIP_FRAMES,
                                                &this_ref_cur);
@@ -861,6 +836,15 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
             goto callback_Breakpoint_cleanup;
         }
         assert(this_ref_cur || !"Failed to get 'this' for current stack frame");
+        if (!(*jni_env)->IsInstanceOf(jni_env, this_ref_cur,
+                                      g_stack_frame_class))
+            continue;
+        // Get the method name and skip any methods whose names don't
+        // correspond to Suneido callable code.
+        if (!getMethodName(jvmti_env, frame_buffer[k].method, &method_name_cur))
+            goto callback_Breakpoint_cleanup;
+        if (METHOD_NAME_UNKNOWN == method_name_cur)
+            continue;
         // If the "this" instance for this Java stack frame is the same as the
         // "this" instance of the immediately preceding Java stack frame, both
         // frames may logically be part of the same Suneido callable invocation
