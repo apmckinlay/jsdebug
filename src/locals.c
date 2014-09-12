@@ -713,6 +713,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jclass           class_ref          = (jclass)NULL;
     enum method_name method_name_cur    = METHOD_NAME_UNKNOWN;
     enum method_name method_name_above  = METHOD_NAME_UNKNOWN;
+    int              is_stack_frame     = 0;
     // Fetch the current thread's frame count
     error = (*jvmti_env)->GetFrameCount(jvmti_env, breakpoint_thread,
                                         &frame_count);
@@ -836,11 +837,12 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         }
         // If the declaring class is not assignable to g_stack_frame_class, we
         // don't want stack frame data from it.
-        if (!(*jni_env)->IsAssignableFrom(jni_env, class_ref, g_stack_frame_class))
-        {
-            (*jni_env)->DeleteLocalRef(jni_env, class_ref);
+        is_stack_frame = (*jni_env)->IsAssignableFrom(jni_env, class_ref,
+                                                      g_stack_frame_class);
+                                                      
+        (*jni_env)->DeleteLocalRef(jni_env, class_ref);
+        if (!is_stack_frame)
             continue;
-        }
         // Get the method name and skip any methods whose names don't
         // correspond to Suneido callable code.
         if (!getMethodName(jvmti_env, frame_buffer[k].method, &method_name_cur))
