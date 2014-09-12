@@ -618,8 +618,7 @@ static int fetchLocals(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread,
             goto fetchLocals_loop_error;
         }
         (*jni_env)->DeleteLocalRef(jni_env, var_name);
-        if (var_value)
-            (*jni_env)->DeleteLocalRef(jni_env, var_value);
+        (*jni_env)->DeleteLocalRef(jni_env, var_value);
         ++array_index;
         continue;
 fetchLocals_loop_error:
@@ -711,9 +710,9 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jint *           line_numbers_arr_  = NULL;
     jint             method_modifiers   = 0;
     jclass           class_ref          = (jclass)NULL;
+    jboolean         is_stack_frame     = JNI_FALSE;
     enum method_name method_name_cur    = METHOD_NAME_UNKNOWN;
     enum method_name method_name_above  = METHOD_NAME_UNKNOWN;
-    int              is_stack_frame     = 0;
     // Fetch the current thread's frame count
     error = (*jvmti_env)->GetFrameCount(jvmti_env, breakpoint_thread,
                                         &frame_count);
