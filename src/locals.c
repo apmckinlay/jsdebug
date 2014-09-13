@@ -410,6 +410,12 @@ static int objFieldPut(JNIEnv * jni_env, jobject obj, jfieldID field_id,
     return 1;
 }
 
+static int isSame(JNIEnv * jni_env, jobject obj1MaybeNull, jobject obj2NotNull)
+{
+    return obj1MaybeNull && 
+        (*jni_env)->IsSameObject(jni_env, obj1MaybeNull, obj2NotNull);
+}
+
 static void deallocateLocalVariableTable(
     jvmtiEnv * jvmti_env, jvmtiLocalVariableEntry * table, jint count)
 
@@ -839,18 +845,27 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         if (!(*jni_env)->IsInstanceOf(jni_env, this_ref_cur,
                                       g_stack_frame_class))
             continue;
-        // Get the method name and skip any methods whose names don't
-        // correspond to Suneido callable code.
+        // Get the method name
         if (!getMethodName(jvmti_env, frame_buffer[k].method, &method_name_cur))
             goto callback_Breakpoint_cleanup;
         if (METHOD_NAME_UNKNOWN == method_name_cur)
+        {
+            // Don't keep "this" if it's the first time we encounter it in a
+            // contiguous sequence that we encountered it and we're going to
+            // skip it anyway.
+            if (!isSame(jni_env, this_ref_above, this_ref_cur))
+            {
+                (*jni_env)->DeleteLocalRef(jni_env, this_ref_cur);
+                this_ref_cur = (jobject)NULL;
+            }
+            // Skip methods whose names don't indicate Suneido callable code.
             continue;
+        }
         // If the "this" instance for this Java stack frame is the same as the
         // "this" instance of the immediately preceding Java stack frame, both
         // frames may logically be part of the same Suneido callable invocation
         // and we only want the top frame, which we have already seen...
-        if (this_ref_above &&
-            (*jni_env)->IsSameObject(jni_env, this_ref_cur, this_ref_above) &&
+        if (isSame(jni_env, this_ref_above, this_ref_cur) &&
             method_name_above != method_name_cur)
             continue;
         // Tag methods that are calls.
