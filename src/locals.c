@@ -717,6 +717,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jint             method_modifiers   = 0;
     enum method_name method_name_cur    = METHOD_NAME_UNKNOWN;
     enum method_name method_name_above  = METHOD_NAME_UNKNOWN;
+/* TODO: delete this line*/ { printf("callback_Breakpoint <IN>             todo: delete me\n"); fflush(stdout); /* TODO: delete this line */ }
     // Fetch the current thread's frame count
     error = (*jvmti_env)->GetFrameCount(jvmti_env, breakpoint_thread,
                                         &frame_count);
@@ -725,7 +726,11 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         errorJVMTI(jvmti_env, error, "from GetFrameCount()");
         goto callback_Breakpoint_cleanup;
     }
-    if (frame_count - SKIP_FRAMES <= MAX_STACK_FRAMES)
+    if (SKIP_FRAMES < frame_count)
+        frame_count -= SKIP_FRAMES;
+    else
+        frame_count = 0;
+    if (frame_count <= MAX_STACK_FRAMES)
         frame_buffer = frame_buffer_stack;
     else
     {
@@ -739,8 +744,8 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     }
     // Fetch the basic stack trace
     error = (*jvmti_env)->GetStackTrace(jvmti_env, breakpoint_thread,
-                                        SKIP_FRAMES, frame_count - SKIP_FRAMES,
-                                        frame_buffer, &frame_count);
+                                        SKIP_FRAMES, frame_count, frame_buffer,
+                                        &frame_count);
     // Retrieve the "this" reference for the frame where the breakpoint was
     // found. This is the "this" reference to the repository object of type
     // REPO_CLASS in whose fields we will store the local variable values.
@@ -811,7 +816,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         if (this_ref_above)
             (*jni_env)->DeleteLocalRef(jni_env, this_ref_above);
         this_ref_above = this_ref_cur;
-        this_ref_cur = NULL;
+        this_ref_cur = (jobject)NULL;
         // Skip native methods
         if (NATIVE_METHOD_JLOCATION == frame_buffer[k].location)
             continue;
@@ -910,6 +915,7 @@ callback_Breakpoint_cleanup:
     if (line_numbers_arr_)
         (*jni_env)->ReleaseIntArrayElements(jni_env, line_numbers_arr,
                                             line_numbers_arr_, JNI_ABORT);
+/* TODO: delete this line*/ { printf("callback_Breakpoint <OUT>             todo: delete me\n"); fflush(stdout); /* TODO: delete this line */ }
 }
 
 #ifdef _MSC_VER
