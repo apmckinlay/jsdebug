@@ -156,8 +156,10 @@ static void errorJVMTI(jvmtiEnv * jvmti_env, jvmtiError error,
     fputs(message, stderr);
     if (JVMTI_ERROR_NONE == (*jvmti_env)->GetErrorName(jvmti_env, error, &name))
     {
+        assert(name || !"Error name cannot be null");
         fputs(" (", stderr);
         fputs(name, stderr);
+        (*jvmti_env)->Deallocate(jvmti_env, (unsigned char *)name);
         fputs("<0x", stderr);
     }
     else
@@ -227,24 +229,27 @@ static void exceptionDescribe(JNIEnv * jni_env)
 static int getClassGlobalRef(JNIEnv * jni_env, jclass * pclass,
                              const char * name)
 {
-    jclass clazz = (*jni_env)->FindClass(jni_env, name);
+    jclass local_ref = (*jni_env)->FindClass(jni_env, name);
+    jclass global_ref = (jclass)NULL;
     if ((*jni_env)->ExceptionCheck(jni_env))
     {
         fatalError2("exception while finding class: ", name);
         exceptionDescribe(jni_env);
         return 0;
     }
-    else if (!clazz)
+    else if (!local_ref)
     {
         fatalError2("can't find class: ", name);
         return 0;
     }
-    *pclass = (*jni_env)->NewGlobalRef(jni_env, clazz);
-    if (!*pclass)
+    global_ref = (*jni_env)->NewGlobalRef(jni_env, local_ref);
+    (*jni_env)->DeleteLocalRef(jni_env, local_ref);
+    if (!global_ref)
     {
-        fatalError2("can't convert class to global reference: ", name);
+        fatalError2("can't make class global reference: ", name);
         return 0;
     }
+    *pclass = global_ref;
     // Return success
     return 1;
 }
@@ -252,18 +257,19 @@ static int getClassGlobalRef(JNIEnv * jni_env, jclass * pclass,
 static int getFieldID(JNIEnv * jni_env, jclass clazz, jfieldID * pfieldID,
                       const char * name, const char * sig)
 {
-    *pfieldID = (*jni_env)->GetFieldID(jni_env, clazz, name, sig);
+    jfieldID fieldID = (*jni_env)->GetFieldID(jni_env, clazz, name, sig);
     if ((*jni_env)->ExceptionCheck(jni_env))
     {
         fatalError2("exception while getting field name: ", name);
         exceptionDescribe(jni_env);
         return 0;
     }
-    else if (!*pfieldID)
+    else if (!fieldID)
     {
         fatalError2("can't get field name: ", name);
         return 0;
     }
+    *pfieldID = fieldID;
     // Return success
     return 1;
 }
@@ -271,18 +277,19 @@ static int getFieldID(JNIEnv * jni_env, jclass clazz, jfieldID * pfieldID,
 static int getMethodID(JNIEnv * jni_env, jclass clazz, jmethodID * pmethodID,
                        const char * name, const char * sig)
 {
-    *pmethodID = (*jni_env)->GetMethodID(jni_env, clazz, name, sig);
+    jmethodID methodID = (*jni_env)->GetMethodID(jni_env, clazz, name, sig);
     if ((*jni_env)->ExceptionCheck(jni_env))
     {
         fatalError2("exception while getting method name: ", name);
         exceptionDescribe(jni_env);
         return 0;
     }
-    else if (!pmethodID)
+    else if (!methodID)
     {
         fatalError2("can't get method name: ", name);
         return 0;
     }
+    *pmethodID = methodID;
     // Return success
     return 1;
 }
@@ -318,7 +325,7 @@ static int initGlobalRefs(JNIEnv * jni_env)
         getClassGlobalRef(jni_env, &g_stack_frame_class, STACK_FRAME_CLASS);
 }
 
-static int initLocalsBreakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env)
+static int initBreakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env)
 {
     jmethodID  method_id;
     jvmtiError error;
@@ -446,6 +453,13 @@ static void JNICALL callback_JVMInit(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                                      jthread thread)
 {
     jvmtiError error;
+    // Initialize certain global references needed so we can store the locals
+    // back into Java.
+    if (!initGlobalRefs(jni_env))
+        goto callback_JVMInit_fatal;
+    // Set the breakpoint.
+    if (!initBreakpoint(jvmti_env, jni_env))
+        goto callback_JVMInit_fatal;
     // Enable breakpoint events
     error = (*jvmti_env)->SetEventNotificationMode(jvmti_env, JVMTI_ENABLE,
                                                    JVMTI_EVENT_BREAKPOINT,
@@ -455,14 +469,7 @@ static void JNICALL callback_JVMInit(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         fatalErrorJVMTI(jvmti_env, error, "failed to enable breakpoint events");
         goto callback_JVMInit_fatal;
     }
-    // Initialize certain global references needed so we can store the locals
-    // back into Java.
-    if (!initGlobalRefs(jni_env))
-        goto callback_JVMInit_fatal;
-    // Set the breakpoint.
-    if (!initLocalsBreakpoint(jvmti_env, jni_env))
-        goto callback_JVMInit_fatal;
-     // Successful initialization
+    // Successful initialization
     return;
     // Failed initialization
 callback_JVMInit_fatal:
@@ -559,23 +566,17 @@ static int fetchLocals(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread,
         &local_entry_count,
         &local_entry_table);
     if (JVMTI_ERROR_ABSENT_INFORMATION == error)
-    {
-        result = 1;
-        goto fetchLocals_end;
-    }
+        return 0;
     else if (JVMTI_ERROR_NONE != error)
     {
         errorJVMTI(jvmti_env, error, "getting local variable table");
         goto fetchLocals_end;
     }
     // NOTE: If the entry count is zero, GetLocalVariableTable() sometimes
-    //       doesn't allocate memory for the table itself.
-    if (local_entry_count < 1)
-    {
-        result = 1;
-        goto fetchLocals_end;
-    }
-    assert(local_entry_table || !"Local variable table should not be null");
+    //       doesn't allocate memory for the table itself. This function is
+    //       robust in that scenario and will simply allocate zero-length
+    //       arrays.
+    assert(0 <= local_entry_count || !"local table may not have negative size");
     // Create arrays that can hold all the possible local variables for this
     // method and attach these arrays into the master arrays.
     if (! objArrNew(jni_env, g_java_lang_string_class, local_entry_count,
@@ -638,8 +639,11 @@ fetchLocals_loop_error:
     result = 1;
 fetchLocals_end:
     // Clean up local variable table
-    deallocateLocalVariableTable(jvmti_env, local_entry_table,
-                                 local_entry_count);
+    if (local_entry_table)
+        deallocateLocalVariableTable(jvmti_env, local_entry_table,
+                                     local_entry_count);
+    else
+        assert(0 == local_entry_count);
     // Clean up any lingering local references
     if (frame_names_arr)
         (*jni_env)->DeleteLocalRef(jni_env, frame_names_arr);
@@ -717,7 +721,6 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jint             method_modifiers   = 0;
     enum method_name method_name_cur    = METHOD_NAME_UNKNOWN;
     enum method_name method_name_above  = METHOD_NAME_UNKNOWN;
-/* TODO: delete this line*/ { printf("callback_Breakpoint <IN>             todo: delete me\n"); fflush(stdout); /* TODO: delete this line */ }
     // Fetch the current thread's frame count
     error = (*jvmti_env)->GetFrameCount(jvmti_env, breakpoint_thread,
                                         &frame_count);
@@ -915,7 +918,6 @@ callback_Breakpoint_cleanup:
     if (line_numbers_arr_)
         (*jni_env)->ReleaseIntArrayElements(jni_env, line_numbers_arr,
                                             line_numbers_arr_, JNI_ABORT);
-/* TODO: delete this line*/ { printf("callback_Breakpoint <OUT>             todo: delete me\n"); fflush(stdout); /* TODO: delete this line */ }
 }
 
 #ifdef _MSC_VER
@@ -966,21 +968,14 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
         fatalError1("Agent_OnLoad failed to install callbacks");
         return error;
     }
-    // Turn on the required callbacks
+    // Turn on the VM init callback, but do not turn on the breakpoint callback
+    // yet as we don't want it active until the VM is ready.
     error = (*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE,
                                                JVMTI_EVENT_VM_INIT,
                                                (jthread)NULL);
     if (JVMTI_ERROR_NONE != error)
     {
         fatalError1("Agent_OnLoad failed to enable VMInit callback");
-        return error;
-    }
-    error = (*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE,
-                                               JVMTI_EVENT_BREAKPOINT,
-                                               (jthread)NULL);
-    if (JVMTI_ERROR_NONE != error)
-    {
-        fatalError1("Agent_OnLoad failed to enable Breakpoint callback");
         return error;
     }
     // Initialized OK
