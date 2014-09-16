@@ -1,9 +1,23 @@
-/**
- * file: locals.c
- * auth: Victor Schappert
- * date: 20140608
- * desc: Code for pushing local variables data to Java using JVMTI
+/* Copyright 2014 (c) Suneido Software Corp. All rights reserved.
+ * Licensed under GPLv2.
  */
+
+#ifdef _MSC_VER
+#pragma warning (disable : 4001) /* nonstandard extension: '//-style' comment */
+#endif // _MSC_VER
+
+//==============================================================================
+// file: locals.c
+// auth: Victor Schappert
+// date: 20140608
+// desc: Code for pushing call stack data to Java using JVMTI
+//==============================================================================
+
+// -----------------------------------------------------------------------------
+// WARNING: This file must be kept in sync with the equivalent code in
+//          suneido/debug/JDWPAgentController.java, which is the fallback code
+//          in case the "jsdebug" agent library cannot be loaded into the JVM.
+// -----------------------------------------------------------------------------
 
 #include <jvmti.h>
 
@@ -19,7 +33,7 @@ enum
 {
     DEFAULT_LINE_NUMBER = -1,
     NATIVE_METHOD_JLOCATION = -1,
-    SKIP_FRAMES = 1,
+    SKIP_FRAMES = 1 /* i.e. we know frame #1 is StackInfo.fetchInfo() */,
     MAX_STACK_FRAMES = 128,
 };
 
@@ -27,6 +41,23 @@ enum
 {
     ACC_PUBLIC      = 0x0001,
     ACC_STATIC      = 0x0008,
+};
+
+enum method_name
+{
+    METHOD_NAME_UNKNOWN = 0x000,
+    METHOD_NAME_EVAL    = 0x100,
+    METHOD_NAME_EVAL0   = METHOD_NAME_EVAL | 10,
+    METHOD_NAME_EVAL1   = METHOD_NAME_EVAL | 11,
+    METHOD_NAME_EVAL2   = METHOD_NAME_EVAL | 12,
+    METHOD_NAME_EVAL3   = METHOD_NAME_EVAL | 13,
+    METHOD_NAME_EVAL4   = METHOD_NAME_EVAL | 14,
+    METHOD_NAME_CALL    = 0x200,
+    METHOD_NAME_CALL0   = METHOD_NAME_CALL | 10,
+    METHOD_NAME_CALL1   = METHOD_NAME_CALL | 11,
+    METHOD_NAME_CALL2   = METHOD_NAME_CALL | 12,
+    METHOD_NAME_CALL3   = METHOD_NAME_CALL | 13,
+    METHOD_NAME_CALL4   = METHOD_NAME_CALL | 14,
 };
 
 static const char * JAVA_LANG_THROWABLE_CLASS       = "java/lang/Throwable";
@@ -38,18 +69,20 @@ static const char * THROWABLE_GET_MSG_METHOD_NAME   = "getMessage";
 static const char * THROWABLE_GET_MSG_METHOD_SIGNATURE =
     "()Ljava/lang/String;";
 
+static const char * REPO_CLASS                      = "suneido/debug/StackInfo";
+static const char * STACK_FRAME_CLASS               = "suneido/runtime/SuCallable";
 static const char * LOCALS_NAME_FIELD_NAME          = "localsNames";
 static const char * LOCALS_NAME_FIELD_SIGNATURE     = "[[Ljava/lang/String;";
 static const char * LOCALS_VALUE_FIELD_NAME         = "localsValues";
 static const char * LOCALS_VALUE_FIELD_SIGNATURE    = "[[Ljava/lang/Object;";
-static const char * FRAME_OBJECTS_FIELD_NAME        = "frameObjects";
-static const char * FRAME_OBJECTS_FIELD_SIGNATURE   = "[Ljava/lang/Object;";
+static const char * IS_CALL_FIELD_NAME              = "isCall";
+static const char * IS_CALL_FIELD_SIGNATURE         = "[Z";
 static const char * LINE_NUMBERS_FIELD_NAME         = "lineNumbers";
 static const char * LINE_NUMBERS_FIELD_SIGNATURE    = "[I";
 static const char * IS_INITIALIZED_FIELD_NAME       = "isInitialized";
 static const char * IS_INITIALIZED_FIELD_SIGNATURE  = "Z";
 static const char * BREAKPT_METHOD_NAME             = "fetchInfo";
-static const char * BREAKPT_METHOD_SIGNATURE        = "()V";
+static const char * BREAKPT_METHOD_SIGNATURE        = "()Lsuneido/debug/StackInfo;";
 
 // =============================================================================
 //                                  GLOBALS
@@ -62,17 +95,37 @@ static jclass     g_array_of_java_lang_string_class;
 static jclass     g_array_of_java_lang_object_class;
 static jmethodID  g_throwable_get_message_method;
 
-static jclass     g_repo_class;
-static jclass     g_stack_frame_class;
+static jclass     g_repo_class;                 // Repository for stack info
+static jclass     g_stack_frame_class;          // For filtering stack frames
 static jfieldID   g_locals_name_field;
 static jfieldID   g_locals_value_field;
-static jfieldID   g_frame_objects_field;
+static jfieldID   g_is_call_field;
 static jfieldID   g_line_numbers_field;
 static jfieldID   g_is_initialized_field;
 
 // =============================================================================
 //                          ERROR LOGGING FUNCTIONS
 // =============================================================================
+
+struct tostr_buf
+{
+    char chars[20];
+};
+
+static char * uintToHexStr(unsigned int x, struct tostr_buf * buffer)
+{
+    char * i = buffer->chars + sizeof(buffer->chars) - 1;
+    *i-- = '\0';
+uintToStr_loop:
+    *i = "0123456789abcdef"[x % 16];
+    if (x)
+    {
+        x /= 16;
+        --i;
+        goto uintToStr_loop;
+    }
+    return i;
+}
 
 static void fatalErrorPrefix()
 {
@@ -94,13 +147,32 @@ static void error2(const char * prefix, const char * suffix)
     fflush(stderr);
 }
 
-static void errorJVMTI(jvmtiError error, const char * message)
+static void errorJVMTI(jvmtiEnv * jvmti_env, jvmtiError error,
+                       const char * message)
 {
+    char *           name = NULL;
+    struct tostr_buf buffer;
     assert(JVMTI_ERROR_NONE != error);
     fputs(message, stderr);
-    fputs(" (jvmti error code ", stderr);
-    fprintf(stderr, "%d)\n", (int)error);
+    if (JVMTI_ERROR_NONE == (*jvmti_env)->GetErrorName(jvmti_env, error, &name))
+    {
+        assert(name || !"Error name cannot be null");
+        fputs(" (", stderr);
+        fputs(name, stderr);
+        (*jvmti_env)->Deallocate(jvmti_env, (unsigned char *)name);
+        fputs("<0x", stderr);
+    }
+    else
+        fputs(" (jvmti error code <0x", stderr);
+    fputs(uintToHexStr((unsigned int)error, &buffer), stderr);
+    fputs(">)\n", stderr);
     fflush(stderr);
+}
+
+static void fatalError1(const char * message)
+{
+    fatalErrorPrefix();
+    error1(message);
 }
 
 static void fatalError2(const char * prefix, const char * suffix)
@@ -109,10 +181,11 @@ static void fatalError2(const char * prefix, const char * suffix)
     error2(prefix, suffix);
 }
 
-static void fatalErrorJVMTI(jvmtiError error, const char * message)
+static void fatalErrorJVMTI(jvmtiEnv * jvmti_env, jvmtiError error,
+                            const char * message)
 {
     fatalErrorPrefix();
-    errorJVMTI(error, message);
+    errorJVMTI(jvmti_env, error, message);
 }
 
 static void exceptionDescribe(JNIEnv * jni_env)
@@ -121,7 +194,7 @@ static void exceptionDescribe(JNIEnv * jni_env)
     jstring      message          = (jstring)NULL;
     const char * message_chars    = (const char *)NULL;
     throwable = (*jni_env)->ExceptionOccurred(jni_env);
-    assert(throwable || !"do not call function if no JNI exception pending");
+    assert(throwable || !"Do not call function if no JNI exception pending");
     (*jni_env)->ExceptionClear(jni_env);
     if (! g_java_lang_throwable_class || ! g_throwable_get_message_method)
     {
@@ -150,127 +223,33 @@ static void exceptionDescribe(JNIEnv * jni_env)
 }
 
 // =============================================================================
-//                           COMMAND LINE OPTIONS
-// =============================================================================
-
-enum command_line_option
-{
-    COMMAND_LINE_OPTION_REPO_CLASS,
-    COMMAND_LINE_OPTION_STACK_FRAME_CLASS,
-    NUM_COMMAND_LINE_OPTIONS
-};
-
-static const char * const COMMAND_LINE_NAMES[NUM_COMMAND_LINE_OPTIONS] =
-{
-    "repo_class",
-    "stack_frame_class"
-};
-
-static const char * const COMMAND_LINE_DEFAULTS[NUM_COMMAND_LINE_OPTIONS] =
-{
-    "suneido/debug/StackInfo",
-    "suneido/runtime/SuCallable"
-};
-
-static const char * command_line_options[NUM_COMMAND_LINE_OPTIONS];
-
-static char * optionDup(const char * start, const char * end)
-{
-    size_t len = end - start;
-    char * dup = (char *)malloc(len + 1);
-    memcpy(dup, start, len);
-    dup[len] = '\0';
-    return dup;
-}
-
-static jvmtiError optionsParse(const char * options)
-{
-    const char * equal_sign;
-    const char * comma;
-    const char * option_end;
-    int option_i;
-    // Parse options
-    if (options)
-    {
-        while (*options)
-        {
-            equal_sign = strchr(options, '=');
-            if (!equal_sign)
-            {
-                error2("bad option: ", options);
-                return JVMTI_ERROR_ILLEGAL_ARGUMENT;
-            }
-            comma = strchr(equal_sign + 1, ',');
-            option_end = comma ? comma : strchr(equal_sign + 1, '\0');
-            for (option_i = 0; option_i < NUM_COMMAND_LINE_OPTIONS; ++option_i)
-            {
-                if (!memcmp(options, COMMAND_LINE_NAMES[option_i],
-                            equal_sign - options))
-                    goto optionsParse_matched_name;
-            }
-            error2("unrecognized option name: ", options);
-            return JVMTI_ERROR_NOT_FOUND;
-    optionsParse_matched_name:
-            if (command_line_options[option_i])
-            {
-                error2("duplicate option name: ", options);
-                return JVMTI_ERROR_DUPLICATE;
-            }
-            else
-                command_line_options[option_i] = optionDup(equal_sign + 1,
-                                                           option_end);
-            if (comma)
-                options = comma + 1;
-            else
-                break;
-        } // while (*options)
-    } // if (options)
-    // Insert default options
-    for (option_i = 0; option_i < NUM_COMMAND_LINE_OPTIONS; ++option_i)
-    {
-        if (!command_line_options[option_i])
-            command_line_options[option_i] = COMMAND_LINE_DEFAULTS[option_i];
-    }
-    // Return success
-    return JVMTI_ERROR_NONE;
-}
-
-static void optionsCleanup()
-{
-    int option_i;
-    for (option_i = 0; option_i < NUM_COMMAND_LINE_OPTIONS; ++option_i)
-    {
-        if (command_line_options[option_i] &&
-            command_line_options[option_i] != COMMAND_LINE_DEFAULTS[option_i])
-            free((char *)command_line_options[option_i]);
-    }
-}
-
-// =============================================================================
 //                             HELPER FUNCTIONS
 // =============================================================================
 
 static int getClassGlobalRef(JNIEnv * jni_env, jclass * pclass,
                              const char * name)
 {
-    jclass clazz = (*jni_env)->FindClass(jni_env, name);
+    jclass local_ref = (*jni_env)->FindClass(jni_env, name);
+    jclass global_ref = (jclass)NULL;
     if ((*jni_env)->ExceptionCheck(jni_env))
     {
         fatalError2("exception while finding class: ", name);
         exceptionDescribe(jni_env);
         return 0;
     }
-    else if (!clazz)
+    else if (!local_ref)
     {
         fatalError2("can't find class: ", name);
         return 0;
     }
-    *pclass = (*jni_env)->NewGlobalRef(jni_env, clazz);
-    if (!*pclass)
+    global_ref = (*jni_env)->NewGlobalRef(jni_env, local_ref);
+    (*jni_env)->DeleteLocalRef(jni_env, local_ref);
+    if (!global_ref)
     {
-        fatalError2("can't convert class to global reference: ", name);
+        fatalError2("can't make class global reference: ", name);
         return 0;
     }
+    *pclass = global_ref;
     // Return success
     return 1;
 }
@@ -278,18 +257,19 @@ static int getClassGlobalRef(JNIEnv * jni_env, jclass * pclass,
 static int getFieldID(JNIEnv * jni_env, jclass clazz, jfieldID * pfieldID,
                       const char * name, const char * sig)
 {
-    *pfieldID = (*jni_env)->GetFieldID(jni_env, clazz, name, sig);
+    jfieldID fieldID = (*jni_env)->GetFieldID(jni_env, clazz, name, sig);
     if ((*jni_env)->ExceptionCheck(jni_env))
     {
         fatalError2("exception while getting field name: ", name);
         exceptionDescribe(jni_env);
         return 0;
     }
-    else if (!*pfieldID)
+    else if (!fieldID)
     {
         fatalError2("can't get field name: ", name);
         return 0;
     }
+    *pfieldID = fieldID;
     // Return success
     return 1;
 }
@@ -297,18 +277,19 @@ static int getFieldID(JNIEnv * jni_env, jclass clazz, jfieldID * pfieldID,
 static int getMethodID(JNIEnv * jni_env, jclass clazz, jmethodID * pmethodID,
                        const char * name, const char * sig)
 {
-    *pmethodID = (*jni_env)->GetMethodID(jni_env, clazz, name, sig);
+    jmethodID methodID = (*jni_env)->GetMethodID(jni_env, clazz, name, sig);
     if ((*jni_env)->ExceptionCheck(jni_env))
     {
         fatalError2("exception while getting method name: ", name);
         exceptionDescribe(jni_env);
         return 0;
     }
-    else if (!pmethodID)
+    else if (!methodID)
     {
         fatalError2("can't get method name: ", name);
         return 0;
     }
+    *pmethodID = methodID;
     // Return success
     return 1;
 }
@@ -330,23 +311,21 @@ static int initGlobalRefs(JNIEnv * jni_env)
             ARRAY_OF_JAVA_LANG_STRING_CLASS) &&
         getClassGlobalRef(jni_env, &g_array_of_java_lang_object_class,
             ARRAY_OF_JAVA_LANG_OBJECT_CLASS) &&
-        getClassGlobalRef(jni_env, &g_repo_class,
-            command_line_options[COMMAND_LINE_OPTION_REPO_CLASS]) &&
-        getClassGlobalRef(jni_env, &g_stack_frame_class,
-            command_line_options[COMMAND_LINE_OPTION_STACK_FRAME_CLASS]) &&
+        getClassGlobalRef(jni_env, &g_repo_class, REPO_CLASS) &&
         getFieldID(jni_env, g_repo_class, &g_locals_name_field,
             LOCALS_NAME_FIELD_NAME, LOCALS_NAME_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_locals_value_field,
             LOCALS_VALUE_FIELD_NAME, LOCALS_VALUE_FIELD_SIGNATURE) &&
-        getFieldID(jni_env, g_repo_class, &g_frame_objects_field,
-            FRAME_OBJECTS_FIELD_NAME, FRAME_OBJECTS_FIELD_SIGNATURE) &&
+        getFieldID(jni_env, g_repo_class, &g_is_call_field,
+            IS_CALL_FIELD_NAME, IS_CALL_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_line_numbers_field,
             LINE_NUMBERS_FIELD_NAME, LINE_NUMBERS_FIELD_SIGNATURE) &&
         getFieldID(jni_env, g_repo_class, &g_is_initialized_field,
-            IS_INITIALIZED_FIELD_NAME, IS_INITIALIZED_FIELD_SIGNATURE);
+            IS_INITIALIZED_FIELD_NAME, IS_INITIALIZED_FIELD_SIGNATURE) &&
+        getClassGlobalRef(jni_env, &g_stack_frame_class, STACK_FRAME_CLASS);
 }
 
-static int initLocalsBreakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env)
+static int initBreakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env)
 {
     jmethodID  method_id;
     jvmtiError error;
@@ -374,14 +353,15 @@ static int initLocalsBreakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env)
                                             &start_location, &end_location);
     if (JVMTI_ERROR_NONE != error)
     {
-        fatalErrorJVMTI(error, "failed to get breakpoint method location");
+        fatalErrorJVMTI(jvmti_env, error,
+                        "failed to get breakpoint method location");
         return 0;
     }
     // Set the breakpoint
     error = (*jvmti_env)->SetBreakpoint(jvmti_env, method_id, start_location);
     if (JVMTI_ERROR_NONE != error)
     {
-        fatalErrorJVMTI(error, "failed to set breakpoint");
+        fatalErrorJVMTI(jvmti_env, error, "failed to set breakpoint");
         return 0;
     }
     // Return success
@@ -437,6 +417,12 @@ static int objFieldPut(JNIEnv * jni_env, jobject obj, jfieldID field_id,
     return 1;
 }
 
+static int isSame(JNIEnv * jni_env, jobject obj1MaybeNull, jobject obj2NotNull)
+{
+    return obj1MaybeNull && 
+        (*jni_env)->IsSameObject(jni_env, obj1MaybeNull, obj2NotNull);
+}
+
 static void deallocateLocalVariableTable(
     jvmtiEnv * jvmti_env, jvmtiLocalVariableEntry * table, jint count)
 
@@ -458,37 +444,47 @@ static void deallocateLocalVariableTable(
 //                            JVM INIT CALLBACKS
 // =============================================================================
 
+#ifdef _MSC_VER
+#pragma warning (push)
+#pragma warning (disable : 4100) // unreferenced formal parameter
+#endif // _MSC_VER
+
 static void JNICALL callback_JVMInit(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                                      jthread thread)
 {
     jvmtiError error;
+    // Initialize certain global references needed so we can store the locals
+    // back into Java.
+    if (!initGlobalRefs(jni_env))
+        goto callback_JVMInit_fatal;
+    // Set the breakpoint.
+    if (!initBreakpoint(jvmti_env, jni_env))
+        goto callback_JVMInit_fatal;
     // Enable breakpoint events
     error = (*jvmti_env)->SetEventNotificationMode(jvmti_env, JVMTI_ENABLE,
                                                    JVMTI_EVENT_BREAKPOINT,
                                                    (jthread)NULL);
     if (JVMTI_ERROR_NONE != error)
     {
-        fatalErrorJVMTI(error, "failed to enable breakpoint events");
-        return;
+        fatalErrorJVMTI(jvmti_env, error, "failed to enable breakpoint events");
+        goto callback_JVMInit_fatal;
     }
-    // Initialize certain global references needed so we can store the locals
-    // back into Java.
-    if (!initGlobalRefs(jni_env)) return;
-    // Set the breakpoint.
-    if (!initLocalsBreakpoint(jvmti_env, jni_env)) return;
+    // Successful initialization
+    return;
+    // Failed initialization
+callback_JVMInit_fatal:
+    (*jni_env)->FatalError(jni_env, "initialization failed");
 }
 
-static void JNICALL callback_JVMDeath(jvmtiEnv * jvmti_env, JNIEnv * jni_env)
-{
-    // TODO: free resources
-}
+#ifdef _MSC_VER
+#pragma warning (pop)
+#endif // _MSC_VER
 
 // =============================================================================
 //                         BREAKPOINT EVENT HANDLER
 // =============================================================================
 
-static int fetchLineNumbers(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
-                            jthread thread, jmethodID method,
+static int fetchLineNumbers(jvmtiEnv * jvmti_env, jmethodID method,
                             jlocation location, jint * line_numbers_arr,
                             jint frame_index)
 {
@@ -506,7 +502,7 @@ static int fetchLineNumbers(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
         goto fetchLineNumbers_store; // Store default value
     else if (JVMTI_ERROR_NONE != error)
     {
-        errorJVMTI(error, "failed to get line number table");
+        errorJVMTI(jvmti_env, error, "failed to get line number table");
         goto fetchLineNumbers_end;
     }
     else if (line_number_entry_count < 1)
@@ -570,23 +566,17 @@ static int fetchLocals(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread,
         &local_entry_count,
         &local_entry_table);
     if (JVMTI_ERROR_ABSENT_INFORMATION == error)
-    {
-        result = 1;
-        goto fetchLocals_end;
-    }
+        return 0;
     else if (JVMTI_ERROR_NONE != error)
     {
-        errorJVMTI(error, "getting local variable table");
+        errorJVMTI(jvmti_env, error, "getting local variable table");
         goto fetchLocals_end;
     }
     // NOTE: If the entry count is zero, GetLocalVariableTable() sometimes
-    //       doesn't allocate memory for the table itself.
-    if (local_entry_count < 1)
-    {
-        result = 1;
-        goto fetchLocals_end;
-    }
-    assert(local_entry_table || !"Local variable table should not be null");
+    //       doesn't allocate memory for the table itself. This function is
+    //       robust in that scenario and will simply allocate zero-length
+    //       arrays.
+    assert(0 <= local_entry_count || !"local table may not have negative size");
     // Create arrays that can hold all the possible local variables for this
     // method and attach these arrays into the master arrays.
     if (! objArrNew(jni_env, g_java_lang_string_class, local_entry_count,
@@ -618,7 +608,7 @@ static int fetchLocals(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread,
         if (JVMTI_ERROR_TYPE_MISMATCH == error) continue; // Not an Object
         if (JVMTI_ERROR_NONE != error)
         {
-            errorJVMTI(error, "failed to get local variable value");
+            errorJVMTI(jvmti_env, error, "failed to get local variable value");
             goto fetchLocals_loop_error;
         }
         if (!var_value) continue; // Don't store null values
@@ -635,8 +625,7 @@ static int fetchLocals(jvmtiEnv * jvmti_env, JNIEnv * jni_env, jthread thread,
             goto fetchLocals_loop_error;
         }
         (*jni_env)->DeleteLocalRef(jni_env, var_name);
-        if (var_value)
-            (*jni_env)->DeleteLocalRef(jni_env, var_value);
+        (*jni_env)->DeleteLocalRef(jni_env, var_value);
         ++array_index;
         continue;
 fetchLocals_loop_error:
@@ -650,8 +639,11 @@ fetchLocals_loop_error:
     result = 1;
 fetchLocals_end:
     // Clean up local variable table
-    deallocateLocalVariableTable(jvmti_env, local_entry_table,
-                                 local_entry_count);
+    if (local_entry_table)
+        deallocateLocalVariableTable(jvmti_env, local_entry_table,
+                                     local_entry_count);
+    else
+        assert(0 == local_entry_count);
     // Clean up any lingering local references
     if (frame_names_arr)
         (*jni_env)->DeleteLocalRef(jni_env, frame_names_arr);
@@ -660,6 +652,53 @@ fetchLocals_end:
     // Return the success or failure code
     return result;
 }
+
+static int getMethodName(jvmtiEnv * jvmti_env, jmethodID method,
+                         enum method_name * mn)
+{
+    char     * str;
+    jvmtiError error;
+    error = (*jvmti_env)->GetMethodName(jvmti_env, method, &str, NULL, NULL);
+    if (JVMTI_ERROR_NONE != error)
+    {
+        errorJVMTI(jvmti_env, error, "failed to get method name");
+        return 0;
+    }
+    assert(str || !"Method name can't be null");
+    if ('e' == str[0] && 'v' == str[1] && 'a' == str[2] && 'l' == str[3])
+    {
+        switch (str[4])
+        {
+            case '\0': *mn = METHOD_NAME_EVAL;  goto getMethodName_success;
+            case '0':  *mn = METHOD_NAME_EVAL0; goto getMethodName_success;
+            case '1':  *mn = METHOD_NAME_EVAL1; goto getMethodName_success;
+            case '2':  *mn = METHOD_NAME_EVAL2; goto getMethodName_success;
+            case '3':  *mn = METHOD_NAME_EVAL3; goto getMethodName_success;
+            case '4':  *mn = METHOD_NAME_EVAL4; goto getMethodName_success;
+        }
+    }
+    else if ('c' == str[0] && 'a' == str[1] && 'l' == str[2] && 'l' == str[3])
+    {
+        switch (str[4])
+        {
+            case '\0': *mn = METHOD_NAME_CALL;  goto getMethodName_success;
+            case '0':  *mn = METHOD_NAME_CALL0; goto getMethodName_success;
+            case '1':  *mn = METHOD_NAME_CALL1; goto getMethodName_success;
+            case '2':  *mn = METHOD_NAME_CALL2; goto getMethodName_success;
+            case '3':  *mn = METHOD_NAME_CALL3; goto getMethodName_success;
+            case '4':  *mn = METHOD_NAME_CALL4; goto getMethodName_success;
+        }
+    }
+    *mn = METHOD_NAME_UNKNOWN;
+getMethodName_success:
+    (*jvmti_env)->Deallocate(jvmti_env, (unsigned char *)str);
+    return 1;
+}
+
+#ifdef _MSC_VER
+#pragma warning (push)
+#pragma warning (disable : 4100) // unreferenced formal parameter
+#endif // _MSC_VER
 
 static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
                                         jthread breakpoint_thread,
@@ -671,23 +710,30 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jvmtiFrameInfo * frame_buffer       = NULL;
     jint             frame_count        = 0;
     jobject          repo_ref           = (jobject)NULL;
+    jobject          this_ref_cur       = (jobject)NULL;
+    jobject          this_ref_above     = (jobject)NULL;
     jobjectArray     locals_names_arr   = (jobjectArray)NULL;
     jobjectArray     locals_values_arr  = (jobjectArray)NULL;
-    jobjectArray     frame_objects_arr  = (jobjectArray)NULL;
+    jbooleanArray    is_call_arr        = (jbooleanArray)NULL;
+    jboolean *       is_call_arr_       = NULL;
     jintArray        line_numbers_arr   = (jintArray)NULL;
     jint *           line_numbers_arr_  = NULL;
     jint             method_modifiers   = 0;
-    jclass           class_ref          = (jclass)NULL;
-    jobject          this_ref           = (jobject)NULL;
+    enum method_name method_name_cur    = METHOD_NAME_UNKNOWN;
+    enum method_name method_name_above  = METHOD_NAME_UNKNOWN;
     // Fetch the current thread's frame count
     error = (*jvmti_env)->GetFrameCount(jvmti_env, breakpoint_thread,
                                         &frame_count);
     if (JVMTI_ERROR_NONE != error)
     {
-        errorJVMTI(error, "from GetFrameCount()");
+        errorJVMTI(jvmti_env, error, "from GetFrameCount()");
         goto callback_Breakpoint_cleanup;
     }
-    if (frame_count - SKIP_FRAMES <= MAX_STACK_FRAMES)
+    if (SKIP_FRAMES < frame_count)
+        frame_count -= SKIP_FRAMES;
+    else
+        frame_count = 0;
+    if (frame_count <= MAX_STACK_FRAMES)
         frame_buffer = frame_buffer_stack;
     else
     {
@@ -701,25 +747,39 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     }
     // Fetch the basic stack trace
     error = (*jvmti_env)->GetStackTrace(jvmti_env, breakpoint_thread,
-                                        SKIP_FRAMES, frame_count - SKIP_FRAMES,
-                                        frame_buffer, &frame_count);
-    // Retrieve the "this" reference for the frame where the exception was
-    // raised. This is the "this" reference to the repository object of type
+                                        SKIP_FRAMES, frame_count, frame_buffer,
+                                        &frame_count);
+    // Retrieve the "this" reference for the frame where the breakpoint was
+    // found. This is the "this" reference to the repository object of type
     // REPO_CLASS in whose fields we will store the local variable values.
     error = (*jvmti_env)->GetLocalInstance(jvmti_env, breakpoint_thread, 0,
                                            &repo_ref);
     if (JVMTI_ERROR_NONE != error)
     {
-        errorJVMTI(error, "attempting to get GetLocalInstance() for repo_ref");
+        errorJVMTI(jvmti_env, error,
+                   "attempting to get GetLocalInstance() for repo_ref");
         goto callback_Breakpoint_cleanup;
     }
+    assert(repo_ref || !"Failed to get 'this' for repo_ref");
     // Create the locals JNI data structures and assign them to the repository
     // object.
     if (!objArrNew(jni_env, g_array_of_java_lang_string_class, frame_count, &locals_names_arr) ||
-        !objArrNew(jni_env, g_array_of_java_lang_object_class, frame_count, &locals_values_arr) ||
-        !objArrNew(jni_env, g_java_lang_object_class, frame_count, &frame_objects_arr))
+        !objArrNew(jni_env, g_array_of_java_lang_object_class, frame_count, &locals_values_arr))
     {
         error1("failed to create locals data structures");
+        goto callback_Breakpoint_cleanup;
+    }
+    is_call_arr = (*jni_env)->NewBooleanArray(jni_env, frame_count);
+    if (!is_call_arr)
+    {
+        error1("failed to create iscall? array");
+        goto callback_Breakpoint_cleanup;
+    }
+    is_call_arr_ = (*jni_env)->GetBooleanArrayElements(jni_env, is_call_arr,
+                                                       NULL);
+    if (!is_call_arr_)
+    {
+        error1("failed to get iscall? array elements");
         goto callback_Breakpoint_cleanup;
     }
     line_numbers_arr = (*jni_env)->NewIntArray(jni_env, frame_count);
@@ -730,7 +790,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     }
     line_numbers_arr_ = (*jni_env)->GetIntArrayElements(jni_env,
                                                         line_numbers_arr, NULL);
-    if (!line_numbers_arr)
+    if (!line_numbers_arr_)
     {
         error1("failed to get line numbers array elements");
         goto callback_Breakpoint_cleanup;
@@ -738,7 +798,7 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     // Store the locals JNI data structures into "this".
     if (!objFieldPut(jni_env, repo_ref, g_locals_name_field, locals_names_arr) ||
         !objFieldPut(jni_env, repo_ref, g_locals_value_field, locals_values_arr) ||
-        !objFieldPut(jni_env, repo_ref, g_frame_objects_field, frame_objects_arr) ||
+        !objFieldPut(jni_env, repo_ref, g_is_call_field, is_call_arr) ||
         !objFieldPut(jni_env, repo_ref, g_line_numbers_field, line_numbers_arr))
     {
         error1("failed to store locals data structures into repo object");
@@ -749,6 +809,17 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
     jint k = 0;
     for (; k < frame_count; ++k)
     {
+        // Keep track of the method name and "this" value in the frame we just
+        // looked at (the frame "above" the current frame in the stack trace).
+        // This information is needed to determine which Java stack frames
+        // actually constitute Suneido stack frames since it may take 3-4 Java
+        // stack frames to invoke a Suneido callable.
+        method_name_above = method_name_cur;
+        method_name_cur = METHOD_NAME_UNKNOWN;
+        if (this_ref_above)
+            (*jni_env)->DeleteLocalRef(jni_env, this_ref_above);
+        this_ref_above = this_ref_cur;
+        this_ref_cur = (jobject)NULL;
         // Skip native methods
         if (NATIVE_METHOD_JLOCATION == frame_buffer[k].location)
             continue;
@@ -757,61 +828,71 @@ static void JNICALL callback_Breakpoint(jvmtiEnv * jvmti_env, JNIEnv * jni_env,
             jvmti_env, frame_buffer[k].method, &method_modifiers);
         if (JVMTI_ERROR_NONE != error)
         {
-            errorJVMTI(error, "failed to get method modifiers");
+            errorJVMTI(jvmti_env, error, "failed to get method modifiers");
             goto callback_Breakpoint_cleanup;
         }
         // Skip non-public methods
         if (ACC_PUBLIC != (ACC_PUBLIC & method_modifiers))
             continue;
-        // Get the declaring class of the method.
-        error = (*jvmti_env)->GetMethodDeclaringClass(
-            jvmti_env, frame_buffer[k].method, &class_ref);
+        // Skip static methods
+        if (ACC_STATIC == (ACC_STATIC & method_modifiers))
+            continue;
+        // If the "this" of the stack frame under consideration isn't an
+        // instance of g_stack_frame_class, we don't want stack frame data from
+        // it.
+        error = (*jvmti_env)->GetLocalInstance(jvmti_env, breakpoint_thread,
+                                               k + SKIP_FRAMES,
+                                               &this_ref_cur);
         if (JVMTI_ERROR_NONE != error)
         {
-            errorJVMTI(error, "failed to get method declaring class");
+            errorJVMTI(jvmti_env, error,
+                       "attempting to get GetLocalInstance() for this_ref_cur");
             goto callback_Breakpoint_cleanup;
         }
-        // If the declaring class is not assignable to g_stack_frame_class, we
-        // don't want stack frame data from it.
-        if (!(*jni_env)->IsAssignableFrom(jni_env, class_ref, g_stack_frame_class))
+        assert(this_ref_cur || !"Failed to get 'this' for current stack frame");
+        if (!(*jni_env)->IsInstanceOf(jni_env, this_ref_cur,
+                                      g_stack_frame_class))
             continue;
-        // If it's an instance method, fetch and store the "this" reference for
-        // the stack frame. Otherwise, if it's a static method, store the class
-        // reference.
-        if (ACC_STATIC != (ACC_STATIC & method_modifiers))
-        {
-            error = (*jvmti_env)->GetLocalInstance(jvmti_env, breakpoint_thread,
-                                                   SKIP_FRAMES + k, &this_ref);
-            if (JVMTI_ERROR_NONE != error)
-            {
-                errorJVMTI(error, "failed to get 'this' reference for non-"
-                                  "static method frame");
-                goto callback_Breakpoint_cleanup;
-            }
-            if (!objArrPut(jni_env, frame_objects_arr, k, this_ref))
-            {
-                error1("failed to store 'this' reference for non-static method "
-                       "frame");
-                goto callback_Breakpoint_cleanup;
-            }
-            (*jni_env)->DeleteLocalRef(jni_env, this_ref);
-        }
-        else if (!objArrPut(jni_env, frame_objects_arr, k, class_ref))
-        {
-            error1("failed to store class reference for static method frame");
+        // Get the method name
+        if (!getMethodName(jvmti_env, frame_buffer[k].method, &method_name_cur))
             goto callback_Breakpoint_cleanup;
+        if (METHOD_NAME_UNKNOWN == method_name_cur)
+        {
+            // Don't keep "this" if it's the first time we encounter it in a
+            // contiguous sequence that we encountered it and we're going to
+            // skip it anyway.
+            if (!isSame(jni_env, this_ref_above, this_ref_cur))
+            {
+                (*jni_env)->DeleteLocalRef(jni_env, this_ref_cur);
+                this_ref_cur = (jobject)NULL;
+            }
+            // Skip methods whose names don't indicate Suneido callable code.
+            continue;
         }
-        (*jni_env)->DeleteLocalRef(jni_env, class_ref);
+        // If the "this" instance for this Java stack frame is the same as the
+        // "this" instance of the immediately preceding Java stack frame, both
+        // frames may logically be part of the same Suneido callable invocation
+        // and we only want the top frame, which we have already seen...
+        if (isSame(jni_env, this_ref_above, this_ref_cur) &&
+            method_name_above != method_name_cur)
+            continue;
+        // Tag methods that are calls.
+        if (METHOD_NAME_CALL & method_name_cur)
+            is_call_arr_[k] = JNI_TRUE;
         // Fetch the locals for this frame
         if (!fetchLocals(jvmti_env, jni_env, breakpoint_thread,
                          frame_buffer[k].method, frame_buffer[k].location,
                          locals_names_arr, locals_values_arr, k))
             goto callback_Breakpoint_cleanup; // Error already reported
-        if (!fetchLineNumbers(jvmti_env, jni_env, breakpoint_thread,
-                              frame_buffer[k].method, frame_buffer[k].location,
-                              line_numbers_arr_, k))
+        if (!fetchLineNumbers(jvmti_env, frame_buffer[k].method,
+                              frame_buffer[k].location, line_numbers_arr_, k))
             goto callback_Breakpoint_cleanup; // Error already reported
     } // for k in [0 .. frame_count)
+    // Write back the iscall? array
+    assert(is_call_arr_);
+    (*jni_env)->ReleaseBooleanArrayElements(jni_env, is_call_arr, is_call_arr_,
+                                            0);
+    is_call_arr_ = NULL;
     // Write back the line numbers array
     assert(line_numbers_arr_);
     (*jni_env)->ReleaseIntArrayElements(jni_env, line_numbers_arr,
@@ -829,15 +910,28 @@ callback_Breakpoint_cleanup:
     // If frame buffer allocated on the heap, clean it up
     if (frame_buffer != frame_buffer_stack)
         free(frame_buffer);
+    // If the iscall? array is still consuming heap space, release it
+    if (is_call_arr_)
+        (*jni_env)->ReleaseBooleanArrayElements(jni_env, is_call_arr,
+                                                is_call_arr_, JNI_ABORT);
     // If the line numbers array is still consuming heap space, release it
     if (line_numbers_arr_)
         (*jni_env)->ReleaseIntArrayElements(jni_env, line_numbers_arr,
                                             line_numbers_arr_, JNI_ABORT);
 }
 
+#ifdef _MSC_VER
+#pragma warning (pop)
+#endif // _MSC_VER
+
 // =============================================================================
 //                                AGENT init
 // =============================================================================
+
+#ifdef _MSC_VER
+#pragma warning (push)
+#pragma warning (disable : 4100) // unreferenced formal parameter
+#endif // _MSC_VER
 
 JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
                                     void * reserved)
@@ -846,17 +940,13 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
     jvmtiError          error;
     jvmtiCapabilities   caps;
     jvmtiEventCallbacks callbacks;
-    // Parse the user-provided options
-    error = optionsParse(options);
-    if (JVMTI_ERROR_NONE != error)
-    {
-        optionsCleanup();
-        return error;
-    }
     // Obtain a pointer to the JVMTI environment
     error = (*jvm)->GetEnv(jvm, (void **)&jvmti, JVMTI_VERSION_1_0);
     if (JVMTI_ERROR_NONE != error)
+    {
+        fatalError1("Agent_OnLoad failed to get JVMTI environment");
         return error;
+    }
     // Indicate the capabilities we want
     memset(&caps, 0, sizeof(caps));
     caps.can_access_local_variables     = 1;
@@ -864,31 +954,37 @@ JNIEXPORT jint JNICALL Agent_OnLoad(JavaVM * jvm, char * options,
     caps.can_generate_breakpoint_events = 1;
     error = (*jvmti)->AddCapabilities(jvmti, &caps);
     if (JVMTI_ERROR_NONE != error)
+    {
+        fatalError1("Agent_OnLoad failed to get required capabilities");
         return error;
-    // Set the callback that will be called to force us to fetch local
-    // variables.
+    }
+    // Install the required callbacks
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.VMInit     = callback_JVMInit;
+    callbacks.Breakpoint = callback_Breakpoint;
+    error = (*jvmti)->SetEventCallbacks(jvmti, &callbacks, sizeof(callbacks));
+    if (JVMTI_ERROR_NONE != error)
+    {
+        fatalError1("Agent_OnLoad failed to install callbacks");
+        return error;
+    }
+    // Turn on the VM init callback, but do not turn on the breakpoint callback
+    // yet as we don't want it active until the VM is ready.
     error = (*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE,
                                                JVMTI_EVENT_VM_INIT,
                                                (jthread)NULL);
     if (JVMTI_ERROR_NONE != error)
+    {
+        fatalError1("Agent_OnLoad failed to enable VMInit callback");
         return error;
-    error = (*jvmti)->SetEventNotificationMode(jvmti, JVMTI_ENABLE,
-                                               JVMTI_EVENT_VM_DEATH,
-                                               (jthread)NULL);
-    if (JVMTI_ERROR_NONE != error)
-        return error;
-    if (JVMTI_ERROR_NONE != error)
-        return error;
-    memset(&callbacks, 0, sizeof(callbacks));
-    callbacks.VMInit     = callback_JVMInit;
-    callbacks.VMDeath    = callback_JVMDeath;
-    callbacks.Breakpoint = callback_Breakpoint;
-    error = (*jvmti)->SetEventCallbacks(jvmti, &callbacks, sizeof(callbacks));
+    }
     // Initialized OK
     return JNI_OK;
 }
 
-JNIEXPORT void JNICALL Agent_OnUnload(JavaVM *vm)
-{
-    optionsCleanup();
-}
+JNIEXPORT void JNICALL Agent_OnUnload(JavaVM * jvm)
+{ }
+
+#ifdef _MSC_VER
+#pragma warning (pop)
+#endif // _MSC_VER

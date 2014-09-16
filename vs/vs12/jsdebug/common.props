@@ -8,6 +8,7 @@
   <ItemDefinitionGroup>
     <ClCompile>
       <AdditionalIncludeDirectories>$(JavaDir)/include;$(JavaDir)/include/win32;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <DisableLanguageExtensions>true</DisableLanguageExtensions>
     </ClCompile>
     <Link>
       <AdditionalDependencies>$(JAVA_HOME_X86)/lib/jvm.lib;%(AdditionalDependencies)</AdditionalDependencies>
