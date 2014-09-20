@@ -532,20 +532,20 @@ fetchLineNumbers_binary_search:
     {
         mi = lo + len / 2;
         if (line_number_table[mi].start_location < location)
-            {
+        {
             lo = mi; // include mi
             goto fetchLineNumbers_binary_search;
-            }
+        }
         else if (location < line_number_table[mi].start_location)
-            {
+        {
             hi = mi; // exclude mi : hi is "one past the end"
             goto fetchLineNumbers_binary_search;
-            }
+        }
         else // equal
-            {
+        {
             line_number = line_number_table[mi].line_number;
             goto fetchLineNumbers_store;
-            }
+        }
     }
 fetchLineNumbers_store:
     line_numbers_arr[frame_index] = line_number;
