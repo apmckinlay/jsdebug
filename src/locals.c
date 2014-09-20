@@ -517,23 +517,35 @@ fetchLineNumbers_binary_search:
     if (len < 16)
     {
         assert(0 < len);
-        do
+        for (++lo; lo < hi; ++lo)
         {
-            line_number = line_number_table[lo].line_number;
-            if (location <= line_number_table[lo].start_location)
-                break;
+            if (location < line_number_table[lo].start_location)
+            {
+                line_number = line_number_table[lo - 1].line_number;
+                goto fetchLineNumbers_store;
+            }
         }
-        while (++lo < hi);
+        line_number = line_number_table[hi - 1].line_number;
         goto fetchLineNumbers_store;
     }
     else // 16 < len
     {
         mi = lo + len / 2;
         if (line_number_table[mi].start_location < location)
-            lo = mi + 1;
-        else
-            hi = mi; // hi is "one past the end"
-        goto fetchLineNumbers_binary_search;
+            {
+            lo = mi; // include mi
+            goto fetchLineNumbers_binary_search;
+            }
+        else if (location < line_number_table[mi].start_location)
+            {
+            hi = mi; // exclude mi : hi is "one past the end"
+            goto fetchLineNumbers_binary_search;
+            }
+        else // equal
+            {
+            line_number = line_number_table[mi].line_number;
+            goto fetchLineNumbers_store;
+            }
     }
 fetchLineNumbers_store:
     line_numbers_arr[frame_index] = line_number;
