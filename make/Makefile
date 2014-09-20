@@ -28,7 +28,6 @@ OBJECTS  :=$(SOURCES:$(SRCDIR)/%.c=$(OBJDIR)/%.o)
 
 CC:=gcc
 CC_INCLUDE_DIRS:="-I$(JAVA_HOME)/include" "-I$(JAVA_HOME)/include/linux"
-CC_INCLUDE_DIRS:=$(subst \,/,$(CC_INCLUDE_DIRS))
 CC_FLAGS=-O$(OPTLEVEL) $(DEBUGOPTION) -Wall -fPIC -fmessage-length=0 \
          $(CC_INCLUDE_DIRS)
 
@@ -69,8 +68,6 @@ endif
 else
 $(error Unsupported CONFIG value: '$(CONFIG)')
 endif
-
-export CC CC_FLAGS
 
 #===============================================================================
 # TARGETS
